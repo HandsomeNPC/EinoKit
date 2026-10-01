@@ -18,6 +18,20 @@ func InitRouter() *gin.Engine {
 }
 
 // RegisterRoutes 挂载业务路由。路由直接挂在根组下，不带 /api 前缀(CLAUDE.md 约定)。
+// 会话相关接口对标 eino-examples/quickstart/chatwitheino/server，当前仅返回 OK。
 func RegisterRoutes(r *gin.Engine) {
+	// 健康检查
 	r.GET("/health", handler.HealthApiApp.Health)
+
+	// 会话管理
+	r.POST("/sessions", handler.SessionApiApp.CreateSession)
+	r.GET("/sessions", handler.SessionApiApp.ListSessions)
+	r.DELETE("/sessions/:id", handler.SessionApiApp.DeleteSession)
+
+	// 会话交互
+	r.POST("/sessions/:id/chat", handler.SessionApiApp.Chat)
+	r.GET("/sessions/:id/render", handler.SessionApiApp.Render)
+	r.POST("/sessions/:id/approve", handler.SessionApiApp.Approve)
+	r.POST("/sessions/:id/abort", handler.SessionApiApp.Abort)
+	r.POST("/sessions/:id/docs", handler.SessionApiApp.Upload)
 }
