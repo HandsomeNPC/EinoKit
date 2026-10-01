@@ -1,23 +1,40 @@
 // Package handler HTTP 接口层，负责参数解析与响应封装。
 package handler
 
-import "github.com/gin-gonic/gin"
+import (
+	"net/http"
+
+	"github.com/gin-gonic/gin"
+
+	"github.com/HandsomeNPC/EinoKit/internal/service/agent"
+)
 
 // SessionApi 会话相关接口（对标 eino-examples/quickstart/chatwitheino/server）。
-// 当前仅返回 OK，具体实现待后续接入 Eino ADK。
 type SessionApi struct{}
 
 // SessionApiApp 单例，供路由注册引用。
 var SessionApiApp = new(SessionApi)
 
 // CreateSession 创建会话。POST /sessions
+// 对标 server.go: POST /sessions —— 生成 UUID 并落库，返回新会话 ID。
 func (a *SessionApi) CreateSession(c *gin.Context) {
-	c.JSON(200, gin.H{"status": "ok"})
+	id, err := agent.SessionSvcApp.Create(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"id": id})
 }
 
 // ListSessions 列出全部会话。GET /sessions
+// 对标 server.go: GET /sessions —— 返回会话元信息列表，空结果序列化为 []。
 func (a *SessionApi) ListSessions(c *gin.Context) {
-	c.JSON(200, gin.H{"status": "ok"})
+	metas, err := agent.SessionSvcApp.List(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, metas)
 }
 
 // DeleteSession 删除指定会话。DELETE /sessions/:id
