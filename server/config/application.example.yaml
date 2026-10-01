@@ -1,4 +1,33 @@
 # EinoKit 应用配置样例。复制为 application.yaml 后按需修改。
 
 server:
+  name: EinoKit       # 服务名，用于日志标识
   port: 8080          # HTTP 监听端口（路由不带 /api 前缀，详见 CLAUDE.md）
+
+datasource:           # PostgreSQL 数据源
+  driver: postgres
+  host: 127.0.0.1
+  port: 5432
+  username: postgres
+  password: postgres
+  dbname: einoit
+  params: sslmode=disable TimeZone=Asia/Shanghai
+  maxIdleConns: 10
+  maxOpenConns: 100
+  connMaxLifetime: 1800   # 秒
+  connMaxIdleTime: 600    # 秒
+  logLevel: warn          # silent/error/warn/info
+  slowThresholdMs: 200    # 慢 SQL 阈值(毫秒)
+
+redis:                # Redis 缓存
+  host: 127.0.0.1
+  port: 6379
+  password:
+  db: 0
+  clientName: EinoKit
+  poolSize: 50
+  minIdleConns: 10
+  dialTimeoutMs: 5000
+  readTimeoutMs: 3000
+  writeTimeoutMs: 3000
+  connMaxIdleTime: 600    # 秒

@@ -10,7 +10,9 @@ import (
 
 // Config 应用完整配置。
 type Config struct {
-	Server ServerConfig `mapstructure:"server"`
+	Server     ServerConfig     `mapstructure:"server"`
+	Datasource DatasourceConfig `mapstructure:"datasource"`
+	Redis      RedisConfig      `mapstructure:"redis"`
 }
 
 // Load 按顺序读取并合并多个 yaml 配置文件，后者覆盖前者，随后写入包级实例。
@@ -23,6 +25,8 @@ func Load(paths ...string) {
 	v.SetConfigType("yaml")
 
 	DefaultServer().setDefaults(v)
+	DefaultDatasource().setDefaults(v)
+	DefaultRedis().setDefaults(v)
 
 	for i, path := range paths {
 		v.SetConfigFile(path)
@@ -70,6 +74,8 @@ func Get() *Config {
 func (c *Config) validate() error {
 	validators := []func() error{
 		c.Server.validate,
+		c.Datasource.validate,
+		c.Redis.validate,
 	}
 	for _, fn := range validators {
 		if err := fn(); err != nil {

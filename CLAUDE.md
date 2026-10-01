@@ -33,30 +33,6 @@ go run ./cmd/server                            # 或 make run,默认 :8080
 go test ./...
 ```
 
-## 关键约定(用户明确要求,勿违背)
-
-### 1. 后端接口**不带 `/api` 前缀**
-所有 HTTP 路由直接挂在根组下:`/auth/*`、`/agent/session/*`、`/agent/run`、`/agent/resume`、`/healthz`、`/readyz`。**不要** `r.Group("/api")`。
-
-- 前端 `web/src/api/*.ts` 的调用路径与后端一一对应(`/auth/*`、`/agent/*`)。
-- `web/vite.config.ts` 的 dev proxy 是 `/auth` 与 `/agent` → `http://localhost:8080`(不是 `/api`)。
-- 若未来要改回 `/api` 前缀,需同步改:后端路由 + 前端 api/*.ts + vite proxy + App.vue 的 `chatServiceConfig.endpoint`。
-
-### 2. AG-UI / Eino ADK 集成的非显然坑(都是踩过的,勿重复)
-
-- **ADK interrupt 必须注册 gob 类型**:`compose.Interrupt(ctx, info)` 的 info 经 `encoding/gob` 序列化进 checkpoint,自定义 info 结构体(含嵌套如 `[]MyDTO`)必须在 `init()` 里 `gob.Register(MyInfo{})`。否则报 `failed to save checkpoint: gob: type not registered for interface`,Run 以 RUN_ERROR 结束(看起来像"客户端断连",其实是 checkpoint 序列化失败)。
-- **REASONING_MESSAGE_* 必须用独立 messageId**,不能复用 TEXT_MESSAGE 的 msgID:同 id 的 REASONING_CONTENT 会让前端 ChatEngine AGUIAdapter 异常关闭 SSE,后端后续写全 `context cancelled`。后端 Emitter 给 reasoning 用独立 `reasoningID`。
-- **Emitter 必须用 `sync.Mutex` 串行化 `write()`**:ADK Callback 在 Runner 的 goroutine 里触发,与 Run() 主循环并发写同一 SSEWriter,不加锁会帧损坏 → 客户端断连。
-- **两类 InferTool 的中断机制不通用**:`utils.InferOptionableTool` 走 `compose.NewInterruptAndRerunErr`;`utils.InferTool` 走 `compose.Interrupt` + `compose.GetResumeContext[T](ctx)` 取确认值。选错会不工作。
-- **ADK Runner 在 `github.com/cloudwego/eino/adk` 子包**(eino v0.9.20+),不是 eino-ext/adk,无需额外依赖。CheckPointStore 接口仅 Get/Set,自写 `sync.Map` 实现即可。`EnableStreaming:false` 可简化事件映射(每步完整 message,免流式 tool-call delta 解析)。
-- **resume 走独立 SSE fetch**(走 `/agent/resume`),**不**经 ChatEngine.sendUserMessage。前端用 fetch + ReadableStream 解析 AG-UI 帧:CUSTOM(a2ui) → A2UI surface / 直接渲染;TEXT → `chatEngine.sendAIMessage({content, sendRequest:false})` 追加。
-- **无 PostgreSQL 时** `internal/store` 自动降级到本地 SQLite(`server/einoit.db`,已 gitignore),便于本地起跑。
-
-### 3. 前端 ChatEngine 约定
-- ChatEngine 的 content 块 data 经 immer 冻结(只读),**不能** `block.data.result = x` 直接赋值(会 throw "Cannot assign to read only property")。要更新块状态须**不可变替换**整个 content 数组:`m.content = m.content.map(b => match ? {...b, data: {...b.data, result, eventType}} : b)`。
-- ToolCallBlock 状态按 `data.eventType` 推进(START/ARGS=调用中, END=执行中, RESULT=完成),**不要只看 `result`**——interrupt 的工具无 result,会卡"调用中"。
-- TDesign chat 系列组件注意:`t-chat-thinking` / `t-chat-markdown` / `t-chat-loading` 是 Vue 组件,渲染成内部 tag 而非 `<t-chat-xxx>` 原标签,`querySelector` 找不到;`t-chat-thinking` 的 `content` prop 是 TNode,传 String 会 warn 且不渲染,用默认 slot `<t-chat-thinking>{{text}}</t-chat-thinking>`;omi `t-chat-md-content` 在 slot 内不渲染文本,text/markdown 块用原生 `<div class="msg-text">{{ b.data }}</div>` 或 Vue `ChatMarkdown`。`ChatItem` 的 `#content` slot 可用(`renderTNodeJSX("content",{slotFirst:true})`),可放自建块组件。
-
 ## 技术栈基线
 
 - **后端**:Go + Eino (`github.com/cloudwego/eino` 含 `/adk` 子包) + AG-UI SDK。AG-UI Go SDK 用 go.mod `replace` 指向本地 `E:/WorkSpace/ag-ui-main/sdks/community/go`(本地开发期,提交前确认是否还需 replace)。Store:PostgreSQL 生产 / SQLite 本地降级。
