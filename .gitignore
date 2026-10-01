@@ -1,0 +1,63 @@
+# ===== Go (server/) =====
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+server/server
+server/bin/
+/bin/
+/dist/
+
+# Test binary / coverage
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# Go workspace files
+go.work
+go.work.sum
+
+# Local SQLite store (per CLAUDE.md)
+server/einoit.db
+server/einoit.db-*
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# ===== Node / Vue (web/) =====
+node_modules/
+web/node_modules/
+web/dist/
+dist/
+.vite/
+*.tsbuildinfo
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+logs/
+*.log
+
+# Local env files
+.env
+.env.local
+.env.*.local
+*.local
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
