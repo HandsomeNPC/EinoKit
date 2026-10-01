@@ -1,0 +1,4 @@
+# EinoKit 应用配置样例。复制为 application.yaml 后按需修改。
+
+server:
+  port: 8080          # HTTP 监听端口（路由不带 /api 前缀，详见 CLAUDE.md）
