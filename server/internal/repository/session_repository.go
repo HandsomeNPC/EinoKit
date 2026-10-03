@@ -125,26 +125,6 @@ func (r *SessionRepository) SelectMessages(ctx context.Context, sessionID string
 	return rows, nil
 }
 
-// UpdatePendingInterruptID 保存/清空中断 ID，对标 mem.Session.SetPendingInterruptID。
-// 传空串即清空，故走单列 Update——Updates(struct) 会跳过零值，让清空写不进库。
-// 主键不存在时返回 ErrSessionNotFound。
-func (r *SessionRepository) UpdatePendingInterruptID(ctx context.Context, id, interruptID string) error {
-	if id == "" {
-		return fmt.Errorf("repository: 会话主键为空")
-	}
-
-	res := r.db.WithContext(ctx).Model(&model.Session{}).
-		Where("id = ?", id).
-		Update("pending_interrupt_id", interruptID)
-	if res.Error != nil {
-		return fmt.Errorf("repository: 更新会话中断 ID id=%s 失败: %w", id, res.Error)
-	}
-	if res.RowsAffected == 0 {
-		return ErrSessionNotFound
-	}
-	return nil
-}
-
 // UpdateMsgIdx 保存 A2UI 组件槽位计数，对标 mem.Session.SetMsgIdx。
 // 同样走单列 Update：idx=0 是合法值，Updates(struct) 会漏写。
 // 主键不存在时返回 ErrSessionNotFound。
@@ -161,55 +141,6 @@ func (r *SessionRepository) UpdateMsgIdx(ctx context.Context, id string, idx int
 		Update("msg_idx", idx)
 	if res.Error != nil {
 		return fmt.Errorf("repository: 更新会话槽位计数 id=%s 失败: %w", id, res.Error)
-	}
-	if res.RowsAffected == 0 {
-		return ErrSessionNotFound
-	}
-	return nil
-}
-
-// UpdatePendingApproval 同时写入中断 ID 与待审批上下文 JSON，标记会话正等待人工审批。
-// 两列一次 Update 写完，避免出现"有中断 ID 但没有上下文"的中间态。
-// 主键不存在时返回 ErrSessionNotFound。
-func (r *SessionRepository) UpdatePendingApproval(ctx context.Context, id, interruptID, approvalJSON string) error {
-	if id == "" {
-		return fmt.Errorf("repository: 会话主键为空")
-	}
-	if interruptID == "" {
-		return fmt.Errorf("repository: 中断 ID 为空")
-	}
-
-	res := r.db.WithContext(ctx).Model(&model.Session{}).
-		Where("id = ?", id).
-		Updates(map[string]any{
-			"pending_interrupt_id": interruptID,
-			"pending_approval":     approvalJSON,
-		})
-	if res.Error != nil {
-		return fmt.Errorf("repository: 更新会话待审批状态 id=%s 失败: %w", id, res.Error)
-	}
-	if res.RowsAffected == 0 {
-		return ErrSessionNotFound
-	}
-	return nil
-}
-
-// ClearPendingApproval 清空中断 ID 与待审批上下文，表示审批已处理完毕。
-// 两列都写零值，故必须用 Updates(map)——Updates(struct) 跳零值会让清空静默失效。
-// 主键不存在时返回 ErrSessionNotFound。
-func (r *SessionRepository) ClearPendingApproval(ctx context.Context, id string) error {
-	if id == "" {
-		return fmt.Errorf("repository: 会话主键为空")
-	}
-
-	res := r.db.WithContext(ctx).Model(&model.Session{}).
-		Where("id = ?", id).
-		Updates(map[string]any{
-			"pending_interrupt_id": "",
-			"pending_approval":     "",
-		})
-	if res.Error != nil {
-		return fmt.Errorf("repository: 清空会话待审批状态 id=%s 失败: %w", id, res.Error)
 	}
 	if res.RowsAffected == 0 {
 		return ErrSessionNotFound

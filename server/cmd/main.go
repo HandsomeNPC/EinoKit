@@ -20,8 +20,8 @@ func main() {
 	redis.Init()
 	defer redis.CloseDefault()
 
-	// 须在 redis.Init 之后：TurnLoop 的审批中断快照落在这里。
-	// TTL 兜底清理被用户遗弃的中断。
+	// 须在 redis.Init 之后：TurnLoop 的 checkpoint 快照落在这里。
+	// TTL 兜底清理被用户遗弃的快照。
 	checkpoint.Init(checkpoint.WithTTL(24 * time.Hour))
 
 	r := router.InitRouter()

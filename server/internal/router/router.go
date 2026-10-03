@@ -19,8 +19,7 @@ func InitRouter() *gin.Engine {
 
 // RegisterRoutes 挂载业务路由。路由直接挂在根组下，不带 /api 前缀(CLAUDE.md 约定)。
 //
-// 会话交互以 AG-UI 协议的 SSE 事件流返回。审批恢复复用 /chat(请求体带
-// toolCallMessage)，/approve 仅保留为指引；render 与 docs 尚未实现。
+// 会话交互以 AG-UI 协议的 SSE 事件流返回；render 与 docs 尚未实现。
 func RegisterRoutes(r *gin.Engine) {
 	// 健康检查
 	r.GET("/health", handler.HealthApiApp.Health)
@@ -33,7 +32,6 @@ func RegisterRoutes(r *gin.Engine) {
 	// 会话交互
 	r.POST("/sessions/:id/chat", handler.SessionApiApp.Chat)
 	r.GET("/sessions/:id/render", handler.SessionApiApp.Render)
-	r.POST("/sessions/:id/approve", handler.SessionApiApp.Approve)
 	r.POST("/sessions/:id/abort", handler.SessionApiApp.Abort)
 	r.POST("/sessions/:id/docs", handler.SessionApiApp.Upload)
 }

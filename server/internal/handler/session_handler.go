@@ -1,14 +1,12 @@
 package handler
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 
 	agui "github.com/HandsomeNPC/agui-go-sdk"
 	"github.com/ag-ui-protocol/ag-ui/sdks/community/go/pkg/core/events"
-	"github.com/ag-ui-protocol/ag-ui/sdks/community/go/pkg/core/types"
 	"github.com/gin-gonic/gin"
 
 	"github.com/HandsomeNPC/EinoKit/internal/loop"
@@ -76,11 +74,6 @@ func (a *SessionApi) Chat(c *gin.Context) {
 		return
 	}
 
-	if req.IsResume() {
-		a.resume(c, id, req)
-		return
-	}
-
 	if req.Prompt == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "prompt 不能为空"})
 		return
@@ -93,52 +86,6 @@ func (a *SessionApi) Chat(c *gin.Context) {
 	finish(em, result, err)
 }
 
-// resume 用审批结论恢复被中断的运行。
-func (a *SessionApi) resume(c *gin.Context, id string, req bo.ChatRequest) {
-	pending, err := agent.SessionSvcApp.PendingApproval(c.Request.Context(), id)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	if pending == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "该会话没有待审批的中断"})
-		return
-	}
-
-	var approval bo.ToolCallApproval
-	if err := json.Unmarshal(req.ToolCallMessage.Result, &approval); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "toolCallMessage.result 解析失败: " + err.Error()})
-		return
-	}
-	approval.ToolCallID = req.ToolCallMessage.ToolCallID
-
-	result := &loop.ApprovalResult{Approved: approval.IsApproved()}
-	if !result.Approved && approval.Reason != "" {
-		reason := approval.Reason
-		result.DisapproveReason = &reason
-	}
-
-	em := openStream(c, id)
-	em.RunStarted()
-
-	// 先把审批结论回填到原来那张审批卡片上：只发 TOOL_CALL_RESULT，
-	// 绝不重发 START/ARGS，否则前端会多渲染一张卡片。
-	decision, err := json.Marshal(map[string]any{
-		"approved": result.Approved,
-		"reason":   approval.Reason,
-	})
-	if err != nil {
-		em.RunError("序列化审批结论失败: " + err.Error())
-		return
-	}
-	if pending.ApprovalToolCallID != "" {
-		em.ToolResult(events.GenerateMessageID(), pending.ApprovalToolCallID, string(decision))
-	}
-
-	turn, err := agent.SessionSvcApp.Resume(c, em, id, pending, result)
-	finish(em, turn, err)
-}
-
 // Abort 立即终止当前会话的运行。POST /sessions/:id/abort
 func (a *SessionApi) Abort(c *gin.Context) {
 	if agent.SessionSvcApp.Abort(c.Param("id")) {
@@ -146,16 +93,6 @@ func (a *SessionApi) Abort(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "no active loop"})
-}
-
-// Approve 旧端点，已合并进 /chat。POST /sessions/:id/approve
-//
-// 保留路由只为给仍在调它的客户端一个明确指引，不再维护第二条代码路径：
-// TDesign 的审批卡片 respond 只会 POST 回聊天端点。
-func (a *SessionApi) Approve(c *gin.Context) {
-	c.JSON(http.StatusGone, gin.H{
-		"error": "审批已合并到 POST /sessions/:id/chat，请在请求体中携带 toolCallMessage",
-	})
 }
 
 // Render 渲染会话历史。GET /sessions/:id/render
@@ -183,12 +120,9 @@ func openStream(c *gin.Context, sessionID string) *agui.Emitter {
 
 // finish 根据本轮结果发出终态事件。
 //
-// 四种收尾：
+// 三种收尾：
 //   - 被更新的请求取代：发 RUN_ERROR，不发 RUN_FINISHED（这一轮不算完成）
 //   - 出错：发 RUN_ERROR
-//   - 中断等待审批：发 RUN_FINISHED + interrupt outcome。TDesign 会把 outcome
-//     静默丢弃（Zod $strip），审批 UI 实际由桥接层发的 approval_request 卡片驱动；
-//     这里仍按规范发，是为了协议正确性与其他客户端。
 //   - 正常结束：发 RUN_FINISHED + success
 func finish(em *agui.Emitter, result loop.TurnResult, err error) {
 	switch {
@@ -198,17 +132,6 @@ func finish(em *agui.Emitter, result loop.TurnResult, err error) {
 		em.RunError(err.Error())
 	case result.Err != nil:
 		em.RunError(fmt.Sprintf("agent 运行出错: %v", result.Err))
-	case result.Interrupted():
-		em.RunFinishedInterrupt([]types.Interrupt{{
-			ID:         result.InterruptID,
-			Reason:     "tool_call",
-			Message:    result.Message,
-			ToolCallID: result.ApprovalToolCallID,
-			Metadata: types.Metadata{
-				"toolName":  result.ToolName,
-				"arguments": result.Arguments,
-			},
-		}})
 	default:
 		em.RunFinishedSuccess()
 	}

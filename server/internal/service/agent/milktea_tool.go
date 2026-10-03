@@ -9,7 +9,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// ToolNameOrderMilkTea 是需要人工审批的下单工具名。
+// ToolNameOrderMilkTea 是下单工具名。
 const ToolNameOrderMilkTea = "order_milk_tea"
 
 // orderMilkTeaArgs 是下单工具的入参。
@@ -36,10 +36,9 @@ const unitPriceCents = 1800
 
 // newOrderMilkTeaTool 构造下单工具。
 //
-// 本轮是桩实现：只生成订单号与金额，不落库。真正的价值在于它被审批中间件拦住，
-// 用来端到端验证 interrupt / resume 链路。
+// 本轮是桩实现：只生成订单号与金额，不落库。
 func newOrderMilkTeaTool() (tool.InvokableTool, error) {
-	return utils.InferTool(ToolNameOrderMilkTea, "下单购买奶茶。需要用户确认后才会真正执行。",
+	return utils.InferTool(ToolNameOrderMilkTea, "下单购买奶茶。",
 		func(ctx context.Context, args *orderMilkTeaArgs) (*orderMilkTeaResult, error) {
 			if args == nil {
 				return nil, fmt.Errorf("下单参数为空")

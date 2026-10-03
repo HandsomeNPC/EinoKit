@@ -1,7 +1,6 @@
 // Command migrate 建表 / 补列，并验证 jsonb 绑定可用。
 //
-// 用 GORM AutoMigrate：表不存在就按 model 建出来，已存在就只补缺的列（如
-// session.pending_approval）。幂等，可重复执行。
+// 用 GORM AutoMigrate：表不存在就按 model 建出来，已存在就只补缺的列。幂等，可重复执行。
 //
 // 为什么独立于 cmd/server：建表是显式动作，不应该在每次启动服务时偷偷做。
 package main
@@ -91,21 +90,4 @@ func verify(db *gorm.DB) {
 		log.Fatalf("回读失败: %v", err)
 	}
 	log.Printf("回读 OK: payload=%s", got.Payload)
-
-	// 顺带验证两个新列可读写（审批中断依赖它们跨请求存活）。
-	if err := db.Model(&model.Session{}).Where("id = ?", sid).
-		Updates(map[string]any{
-			"pending_interrupt_id": "int-test",
-			"pending_approval":     `{"interruptId":"int-test"}`,
-		}).Error; err != nil {
-		log.Fatalf("写待审批列失败: %v", err)
-	}
-	var sess model.Session
-	if err := db.Where("id = ?", sid).First(&sess).Error; err != nil {
-		log.Fatalf("回读会话失败: %v", err)
-	}
-	if sess.PendingInterruptID != "int-test" || sess.PendingApproval == "" {
-		log.Fatalf("待审批列回读不符: %+v", sess)
-	}
-	log.Println("pending_interrupt_id / pending_approval 读写 OK")
 }

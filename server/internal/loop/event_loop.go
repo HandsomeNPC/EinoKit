@@ -2,7 +2,6 @@ package loop
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -13,13 +12,8 @@ import (
 	"github.com/cloudwego/eino/schema"
 	"github.com/gin-gonic/gin"
 
-	"github.com/HandsomeNPC/EinoKit/internal/aguibridge"
 	"github.com/HandsomeNPC/EinoKit/internal/repository"
 )
-
-// errInterrupted 在 Agent 因审批被中断时由 OnAgentEvents 返回，
-// TurnLoop 以它作为 ExitReason 退出（并保存 checkpoint）。
-var errInterrupted = errors.New("loop: agent 因审批中断")
 
 // errSuperseded 表示本轮已被更新的请求取代。
 var errSuperseded = errors.New("loop: 本轮已被更新的请求取代")
@@ -56,7 +50,7 @@ func RunChat(c *gin.Context, em *agui.Emitter, d Deps, sessionID, query string) 
 		ts.mu.Unlock()
 
 		if ok, _ := existing.Push(item, adk.WithPreempt[*ChatItem, *schema.AgenticMessage](adk.AfterToolCalls)); ok {
-			return streamOneTurn(c, em, sessionID, ready, done, nil)
+			return streamOneTurn(c, em, sessionID, ready, done)
 		}
 
 		// 推不进去说明 loop 已经死了（例如上一轮出错），建新的。
@@ -66,44 +60,7 @@ func RunChat(c *gin.Context, em *agui.Emitter, d Deps, sessionID, query string) 
 
 	ready, done := ts.startLoopLocked(d, sessionID, item)
 	ts.mu.Unlock()
-	return streamOneTurn(c, em, sessionID, ready, done, nil)
-}
-
-// RunResume 用用户的审批决定恢复被中断的运行。
-//
-// 它会新建一个带 checkpoint 的 TurnLoop：Store + CheckpointID 都配好时，
-// TurnLoop 在 Run 时发现快照里有 runner 状态，就走 GenResume 而非 GenInput。
-func RunResume(c *gin.Context, em *agui.Emitter, d Deps, sessionID string,
-	pending *PendingApproval, result *ApprovalResult,
-) (iterResult, error) {
-	item := &ChatItem{
-		ApprovalResult: result,
-		InterruptID:    pending.InterruptID,
-	}
-
-	// 恢复时让本轮到达的工具结果回填到原来那张卡片上。
-	var seed map[string]string
-	if pending.ModelCallID != "" && pending.CallToolCallID != "" {
-		seed = map[string]string{pending.ModelCallID: pending.CallToolCallID}
-	}
-
-	ts := getTurnState(sessionID)
-	ts.mu.Lock()
-	// 清掉任何残留的 loop：审批恢复必须从 checkpoint 起跑。
-	if ts.loop != nil {
-		ts.loop.Stop(adk.WithImmediate())
-		ts.loop = nil
-	}
-	if ts.cancelLoop != nil {
-		ts.cancelLoop()
-		ts.cancelLoop = nil
-	}
-	ready, done := ts.startLoopLocked(d, sessionID, item)
-	ts.mu.Unlock()
-
-	log.Printf("[approve] session=%s interruptID=%s approved=%v",
-		sessionID, pending.InterruptID, result.Approved)
-	return streamOneTurn(c, em, sessionID, ready, done, seed)
+	return streamOneTurn(c, em, sessionID, ready, done)
 }
 
 // rearmLocked 换上一对新的桥接通道，并关闭旧的 handlerDone 通知前一个 handler 退出。
@@ -155,8 +112,6 @@ func startLoopCleanup(ts *sessionTurnState, l *adk.TurnLoop[*ChatItem, *schema.A
 		switch {
 		case state.ExitReason == nil:
 			log.Printf("[loop] session=%s 正常退出", sessionID)
-		case errors.Is(state.ExitReason, errInterrupted):
-			log.Printf("[loop] session=%s 因审批中断退出", sessionID)
 		default:
 			log.Printf("[loop] session=%s 退出: %v", sessionID, state.ExitReason)
 		}
@@ -171,7 +126,7 @@ func startLoopCleanup(ts *sessionTurnState, l *adk.TurnLoop[*ChatItem, *schema.A
 // 在等待期间开一个保活 goroutine：抢占场景下上一轮可能要排空几十秒，
 // 期间什么都不写可能让浏览器/中间代理认为连接已失活。
 func streamOneTurn(c *gin.Context, em *agui.Emitter, sessionID string,
-	ready chan iterEnvelope, handlerDone chan struct{}, seed map[string]string,
+	ready chan iterEnvelope, handlerDone chan struct{},
 ) (iterResult, error) {
 	kaStop, kaDone := startKeepalive(c)
 
@@ -189,7 +144,7 @@ func streamOneTurn(c *gin.Context, em *agui.Emitter, sessionID string,
 		return iterResult{}, fmt.Errorf("loop: agent 未在 %s 内启动", agentStartTimeout)
 	}
 
-	result := aguibridge.StreamTurn(em, seed, envelope.events)
+	result := streamTurn(em, envelope.events)
 
 	// 回传给给我们投递这个信封的那次 OnAgentEvents（而非 ts 上的通道）。
 	envelope.done <- result
@@ -197,8 +152,6 @@ func streamOneTurn(c *gin.Context, em *agui.Emitter, sessionID string,
 	switch {
 	case result.Err != nil:
 		log.Printf("[chat] session=%s 流式出错: %v", sessionID, result.Err)
-	case result.Interrupted():
-		log.Printf("[chat] session=%s 中断等待审批: id=%s", sessionID, result.InterruptID)
 	default:
 		log.Printf("[chat] session=%s 完成，回复 %d 字", sessionID, len([]rune(result.LastContent)))
 	}
@@ -244,17 +197,15 @@ func stopKeepalive(stop, done chan struct{}) {
 // 一轮的生命周期：
 //  1. loop.Run(ctx)
 //  2. → GenInput(items)        把队列里的 ChatItem 变成这一轮的 Agent 输入
-//     （或 GenResume，当 checkpoint 里存着被中断的 runner 状态）
 //  3. → PrepareAgent(consumed)  决定这一轮用哪个 Agent
 //  4. → Agent.Run(input)        拿到事件迭代器
 //  5. → OnAgentEvents(...)      ★ 在这里把迭代器交给 HTTP handler，只调一次
 //  6. 根据 OnAgentEvents 返回的 error 决定 ExitReason
 //
-// Store 与 CheckpointID 始终配置：首轮对话的中断必须落盘，之后的恢复才找得到它。
+// Store 与 CheckpointID 始终配置，供 TurnLoop 保存快照。
 func newLoop(d Deps, sessionID string) *adk.TurnLoop[*ChatItem, *schema.AgenticMessage] {
 	return adk.NewTurnLoop(adk.TurnLoopConfig[*ChatItem, *schema.AgenticMessage]{
 		GenInput:      makeGenInput(d, sessionID),
-		GenResume:     makeGenResume(d, sessionID),
 		PrepareAgent:  makePrepareAgent(d),
 		OnAgentEvents: makeOnAgentEvents(d, sessionID),
 		Store:         d.Store,
@@ -312,42 +263,6 @@ func makeGenInput(d Deps, sessionID string) func(context.Context, *adk.TurnLoop[
 	}
 }
 
-// makeGenResume 用审批结果恢复被中断的那一轮。
-func makeGenResume(d Deps, sessionID string) func(context.Context, *adk.TurnLoop[*ChatItem, *schema.AgenticMessage], []*ChatItem, []*ChatItem, []*ChatItem) (*adk.GenResumeResult[*ChatItem, *schema.AgenticMessage], error) {
-	return func(ctx context.Context, _ *adk.TurnLoop[*ChatItem, *schema.AgenticMessage], interruptedItems, unhandledItems, newItems []*ChatItem) (*adk.GenResumeResult[*ChatItem, *schema.AgenticMessage], error) {
-		for _, item := range newItems {
-			if item.ApprovalResult != nil {
-				return &adk.GenResumeResult[*ChatItem, *schema.AgenticMessage]{
-					ResumeParams: &adk.ResumeParams{
-						Targets: map[string]any{item.InterruptID: item.ApprovalResult},
-					},
-					Consumed:  interruptedItems,
-					Remaining: unhandledItems,
-				}, nil
-			}
-		}
-
-		// 没有审批条目：用户无视审批卡片直接发了新消息。
-		// 此时不能报错——报错会让会话永久卡在 resume 模式。自动把原审批当作取消，
-		// 新消息留到下一轮由 GenInput 处理。
-		sess, err := d.Repo.SelectByID(ctx, sessionID)
-		if err != nil || sess == nil || sess.PendingInterruptID == "" {
-			return nil, errors.New("loop: 没有可恢复的审批")
-		}
-		reason := "用户发送了新消息，本次审批视为取消"
-		log.Printf("[genResume] session=%s 无审批条目，自动取消中断 %s", sessionID, sess.PendingInterruptID)
-		return &adk.GenResumeResult[*ChatItem, *schema.AgenticMessage]{
-			ResumeParams: &adk.ResumeParams{
-				Targets: map[string]any{
-					sess.PendingInterruptID: &ApprovalResult{Approved: false, DisapproveReason: &reason},
-				},
-			},
-			Consumed:  interruptedItems,
-			Remaining: append(unhandledItems, newItems...),
-		}, nil
-	}
-}
-
 // makePrepareAgent 每轮都返回同一个 Agent。
 func makePrepareAgent(d Deps) func(context.Context, *adk.TurnLoop[*ChatItem, *schema.AgenticMessage], []*ChatItem) (adk.TypedAgent[*schema.AgenticMessage], error) {
 	return func(context.Context, *adk.TurnLoop[*ChatItem, *schema.AgenticMessage], []*ChatItem) (adk.TypedAgent[*schema.AgenticMessage], error) {
@@ -357,7 +272,7 @@ func makePrepareAgent(d Deps) func(context.Context, *adk.TurnLoop[*ChatItem, *sc
 
 // makeOnAgentEvents 是 TurnLoop 与 HTTP handler 之间的桥。
 //
-// 它把事件迭代器递给 handler，等 handler 消费完，然后负责落库与中断状态维护。
+// 它把事件迭代器递给 handler，等 handler 消费完，然后负责落库。
 func makeOnAgentEvents(d Deps, sessionID string) func(context.Context, *adk.TurnContext[*ChatItem, *schema.AgenticMessage], *adk.AsyncIterator[*adk.TypedAgentEvent[*schema.AgenticMessage]]) error {
 	return func(ctx context.Context, _ *adk.TurnContext[*ChatItem, *schema.AgenticMessage], evs *adk.AsyncIterator[*adk.TypedAgentEvent[*schema.AgenticMessage]]) error {
 		ts := getTurnState(sessionID)
@@ -399,28 +314,6 @@ func makeOnAgentEvents(d Deps, sessionID string) func(context.Context, *adk.Turn
 			}
 		}
 
-		if result.Interrupted() {
-			pending := PendingApproval{
-				InterruptID:        result.InterruptID,
-				ApprovalToolCallID: result.ApprovalToolCallID,
-				CallToolCallID:     result.CallToolCallID,
-				ModelCallID:        result.ModelCallID,
-				ToolName:           result.ToolName,
-				Arguments:          result.Arguments,
-			}
-			blob, err := json.Marshal(pending)
-			if err != nil {
-				return fmt.Errorf("loop: 序列化待审批上下文失败: %w", err)
-			}
-			if err := d.Repo.UpdatePendingApproval(ctx, sessionID, result.InterruptID, string(blob)); err != nil {
-				return fmt.Errorf("loop: 保存待审批状态失败: %w", err)
-			}
-			return errInterrupted
-		}
-
-		if err := d.Repo.ClearPendingApproval(ctx, sessionID); err != nil {
-			log.Printf("[onEvents] session=%s 清空待审批状态失败: %v", sessionID, err)
-		}
 		return result.Err
 	}
 }
