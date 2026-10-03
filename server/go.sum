@@ -1,3 +1,7 @@
+github.com/HandsomeNPC/agui-go-sdk v0.0.0-20260928124847-9ebb31fdb713 h1:AZXvZQM5B9YUxPtS9mMzp12592p0w4+ToRvscKksyhY=
+github.com/HandsomeNPC/agui-go-sdk v0.0.0-20260928124847-9ebb31fdb713/go.mod h1:eJ+T8MDux5Fh3uXOp04MIbqQS3MoWAJWPOgrgeHQRiE=
+github.com/ag-ui-protocol/ag-ui/sdks/community/go v0.0.0-20260923130623-e62b348680c4 h1:8fhbaZqevbctwaCko6ExPA/SDaOqsyljFtqQNe5jZGk=
+github.com/ag-ui-protocol/ag-ui/sdks/community/go v0.0.0-20260923130623-e62b348680c4/go.mod h1:ERAMOexUee4AIuoxksuuGoEcHl3aqLwaazjGwlR9ZCI=
 github.com/airbrake/gobrake v3.6.1+incompatible/go.mod h1:wM4gu3Cn0W0K7GUuVWnlXZU11AGBXMILnrdOU8Kn00o=
 github.com/bahlo/generic-list-go v0.2.0 h1:5sz/EEAK+ls5wF+NeqDpk5+iNdMDXrh3z3nPnH1Wvgk=
 github.com/bahlo/generic-list-go v0.2.0/go.mod h1:2KvAjgMlE5NNynlg/5iLrrCCZ2+5xWbdbCW3pNTGyYg=

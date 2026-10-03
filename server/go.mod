@@ -13,6 +13,8 @@ require (
 )
 
 require (
+	github.com/HandsomeNPC/agui-go-sdk v0.0.0-20260928124847-9ebb31fdb713 // indirect
+	github.com/ag-ui-protocol/ag-ui/sdks/community/go v0.0.0-20260923130623-e62b348680c4 // indirect
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/buger/jsonparser v1.1.1 // indirect
 	github.com/bytedance/gopkg v0.1.3 // indirect
