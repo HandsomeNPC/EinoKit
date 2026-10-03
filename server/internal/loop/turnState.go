@@ -36,10 +36,10 @@ type iterEnvelope[M adk.MessageType] struct {
 
 // iterResult 把结果从 HTTP handler 回传给 OnAgentEvents。
 type iterResult[M adk.MessageType] struct {
-	lastContent   string
-	intermediates []M // 待持久化的消息(Assistant消息以及工具调用消息)
-	interruptID   string
-	msgIdx        int
+	lastContent   string //这一轮 Agent 最后一条 assistant 文本回复的内容
+	intermediates []M    // 待持久化的消息(Assistant消息以及工具调用消息)
+	interruptID   string // 这一轮因审批被中断,值是触发中断的 interrupt 上下文 ID
+	msgIdx        int    //A2UI 组件树里"这一轮已经写到第几个 msg 卡片"的游标。中断时它告诉 OnAgentEvents已经落库到哪了
 	err           error
 }
 
