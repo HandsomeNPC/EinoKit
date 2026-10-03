@@ -1,4 +1,3 @@
-// Package handler HTTP 接口层，负责参数解析与响应封装。
 package handler
 
 import (
@@ -18,13 +17,11 @@ import (
 	"github.com/HandsomeNPC/EinoKit/internal/service/agent"
 )
 
-// SessionApi 会话相关接口。
 type SessionApi struct{}
 
-// SessionApiApp 单例，供路由注册引用。
 var SessionApiApp = new(SessionApi)
 
-// CreateSession 创建会话。POST /sessions
+// CreateSession 创建会话
 func (a *SessionApi) CreateSession(c *gin.Context) {
 	id, err := agent.SessionSvcApp.Create(c.Request.Context())
 	if err != nil {
@@ -34,7 +31,7 @@ func (a *SessionApi) CreateSession(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"id": id})
 }
 
-// ListSessions 列出全部会话。GET /sessions
+// ListSessions 列出全部会话
 func (a *SessionApi) ListSessions(c *gin.Context) {
 	metas, err := agent.SessionSvcApp.List(c.Request.Context())
 	if err != nil {
@@ -44,7 +41,7 @@ func (a *SessionApi) ListSessions(c *gin.Context) {
 	c.JSON(http.StatusOK, metas)
 }
 
-// DeleteSession 删除指定会话。DELETE /sessions/:id
+// DeleteSession 删除指定会话
 func (a *SessionApi) DeleteSession(c *gin.Context) {
 	id := c.Param("id")
 	if err := agent.SessionSvcApp.Delete(c.Request.Context(), id); err != nil {
@@ -58,10 +55,7 @@ func (a *SessionApi) DeleteSession(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
-// Chat 会话对话，以 AG-UI 事件流（SSE）返回。POST /sessions/:id/chat
-//
-// 请求体带 toolCallMessage 即视为审批恢复——TDesign 的审批卡片 respond 之后，
-// 前端会把结论 POST 回本端点，而不是另一个 /approve 端点。
+// Chat 会话对话，以 AG-UI 事件流（SSE）返回
 func (a *SessionApi) Chat(c *gin.Context) {
 	id := c.Param("id")
 
@@ -112,10 +106,11 @@ func (a *SessionApi) resume(c *gin.Context, id string, req bo.ChatRequest) {
 	}
 
 	var approval bo.ToolCallApproval
-	if err := json.Unmarshal(req.ToolCallMessage, &approval); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "toolCallMessage 解析失败: " + err.Error()})
+	if err := json.Unmarshal(req.ToolCallMessage.Result, &approval); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "toolCallMessage.result 解析失败: " + err.Error()})
 		return
 	}
+	approval.ToolCallID = req.ToolCallMessage.ToolCallID
 
 	result := &loop.ApprovalResult{Approved: approval.IsApproved()}
 	if !result.Approved && approval.Reason != "" {
