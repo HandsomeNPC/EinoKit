@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/compose"
 	goredis "github.com/redis/go-redis/v9"
 
@@ -72,6 +73,10 @@ type redisStore struct {
 	ttl    time.Duration
 }
 
+// TurnLoop 只在运行时断言 CheckPointDeleter，签名写错不会报错而是静默降级
+// （陈旧快照残留）。这里做编译期断言把它钉住。
+var _ adk.CheckPointDeleter = (*redisStore)(nil)
+
 // Set 写入一条 checkpoint。ttl>0 时携带过期时间，否则永久存储。
 func (s *redisStore) Set(ctx context.Context, key string, value []byte) error {
 	if s.client == nil {
@@ -104,6 +109,23 @@ func (s *redisStore) Get(ctx context.Context, key string) ([]byte, bool, error) 
 		return nil, false, fmt.Errorf("checkpoint: 读取 %s 失败: %w", k, err)
 	}
 	return v, true, nil
+}
+
+// Delete 删除一条 checkpoint，实现 adk.CheckPointDeleter。
+//
+// adk.CheckPointStore 本身只要求 Get/Set，但 TurnLoop 在干净退出时会机会性断言
+// CheckPointDeleter 来清掉快照（eino adk/turn_loop.go:983）。不实现它的话，
+// 已解决的审批中断快照会残留，导致下一次对话误走 GenResume 去恢复一个
+// 已经结束的中断——这是最难排查的故障模式。
+func (s *redisStore) Delete(ctx context.Context, key string) error {
+	if s.client == nil {
+		return errors.New("checkpoint: redis 客户端未注入")
+	}
+	k := s.prefix + key
+	if err := s.client.Del(ctx, k).Err(); err != nil {
+		return fmt.Errorf("checkpoint: 删除 %s 失败: %w", k, err)
+	}
+	return nil
 }
 
 // 包级默认实例。

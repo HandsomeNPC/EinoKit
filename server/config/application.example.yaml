@@ -31,3 +31,10 @@ redis:                # Redis 缓存
   readTimeoutMs: 3000
   writeTimeoutMs: 3000
   connMaxIdleTime: 600    # 秒
+
+chatmodel:            # 对话模型(agenticopenai / Responses API)
+  apiKey:             # 真实 key 只写在 application.yaml(已 gitignore)
+  model: gpt-5
+  baseURL: https://api.openai.com/v1
+  byAzure: false
+  timeoutMs: 180000       # 请求超时(毫秒)

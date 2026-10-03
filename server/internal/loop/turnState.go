@@ -1,52 +1,101 @@
+// Package loop 负责一个会话的"轮次"生命周期：把 HTTP 请求里的用户消息 / 审批决定
+// 推进 adk.TurnLoop，再把 Agent 吐出的事件流交给 HTTP handler 翻译成 AG-UI 事件。
+//
+// 消息类型固定为 *schema.AgenticMessage：AG-UI 的 REASONING_* 事件依赖
+// schema.ContentBlockTypeReasoning，而该类型只存在于 AgenticMessage；且 AgenticMessage
+// 下工具结果就是普通消息事件（一个 FunctionToolResult 块），一个 switch 即可统一处理
+// reasoning / text / tool call / tool result，无需参考项目那套 msgops 泛型适配层。
 package loop
 
 import (
+	"context"
 	"sync"
 
 	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/schema"
+
+	"github.com/HandsomeNPC/EinoKit/internal/aguibridge"
 )
+
+// Msg 是本项目统一的消息类型。
+type Msg = aguibridge.Msg
+
+// turnLoop / agentEvents 是两个长类型的简写。
+type (
+	turnLoop    = adk.TurnLoop[*ChatItem, Msg]
+	agentEvents = adk.AsyncIterator[*adk.TypedAgentEvent[Msg]]
+)
+
+// 确保 Msg 就是 *schema.AgenticMessage（桥接层与本包必须说同一种消息）。
+var _ Msg = (*schema.AgenticMessage)(nil)
 
 // turnStates 按 sessionID 维护每个会话的 sessionTurnState。
 var turnStates = sync.Map{}
 
-type sessionTurnState[M adk.MessageType] struct {
-	mu          sync.Mutex                  //保证并发安全
-	loop        *adk.TurnLoop[*ChatItem, M] //该会话当前的TurnLoop，nil表示没有进行中的轮次
-	iterReady   chan iterEnvelope[M]        // OnAgentEvents → HTTP handler,Agent产出事件的时候,onAgentEvents把事件迭代器+history打包成iterEnvelop发到这里
-	handlerDone chan struct{}               //通过close(ts.handlerDone)关闭消息
+// sessionTurnState 为一个会话持有 TurnLoop 与事件桥接通道。
+//
+// 注意 loop 的寿命长于单个 HTTP 请求：loop.Run 拿的是 background 派生的 context，
+// handler 只是某一轮事件迭代器的临时消费者。
+type sessionTurnState struct {
+	mu   sync.Mutex // 保证并发安全
+	loop *turnLoop  // 该会话当前的 TurnLoop，nil 表示没有进行中的轮次
+	// cancelLoop 取消 loop 自己的 context。handler 超时放弃后，OnAgentEvents 可能
+	// 停在 <-done 上无人读，只有 ctx.Done() 能救它，否则 goroutine 与快照双泄漏。
+	cancelLoop  context.CancelFunc
+	iterReady   chan iterEnvelope // OnAgentEvents → handler：Agent 产出事件时把迭代器打包发到这里
+	handlerDone chan struct{}     // 关闭以通知前一个 handler 在被抢占时退出
+	// Preempt = 抢占：用户在 Agent 还没答完当前轮时又发新消息，系统打断当前轮次优先处理新消息。
 }
 
-// ChatItem 用户消息
+// ChatItem 是 TurnLoop 的条目类型：用户每一次"往对话里塞东西"——无论是发新消息，
+// 还是对一个待审批的工具调用做决定——都打包成一个 ChatItem 推进循环。
+//
+// 两种条目靠字段是否为空区分：
+//   - 普通消息条目：Query != ""，ApprovalResult == nil
+//   - 审批条目：Query == ""，ApprovalResult != nil，InterruptID 指明要解除哪个中断
 type ChatItem struct {
 	Query          string          // 用户消息文本(审批条目时为空)
 	ApprovalResult *ApprovalResult // 当本条目携带审批决定时非 nil
 	InterruptID    string          // 本审批所解决的 interrupt 的 ID
 }
 
+// ApprovalResult 是用户对一个被中断等待审批的工具调用给出的结论。
 type ApprovalResult struct {
-	Approved         bool
-	DisapproveReason *string
+	Approved         bool    // true 批准执行，false 拒绝
+	DisapproveReason *string // 拒绝原因，批准时为 nil
 }
 
-type iterEnvelope[M adk.MessageType] struct {
-	events  *adk.AsyncIterator[*adk.TypedAgentEvent[M]] //Agent生的事件
-	history []M                                         //本轮之前产生的消息
-	done    chan iterResult[M]
+// iterEnvelope 把事件迭代器从 OnAgentEvents 传给 HTTP handler。
+//
+// done 通道随信封一起传递，而不是挂在 sessionTurnState 上：这样 handler 回复的
+// 永远是"给自己投递信封的那次 OnAgentEvents 调用"，即便并发抢占已经把会话级
+// 通道换掉也不会错投。
+//
+// 这里有意偏离参考实现（它在 sessionTurnState 上还有一个 iterDone 字段）：
+// 那个字段由 handler 写、仅被 OnAgentEvents 读，是纯交接槽；既然信封由
+// OnAgentEvents 构造，它自己 make 这个通道即可，字段可以消失。
+//
+// 也没有 history 字段：AG-UI 是追加式事件协议，客户端自己持有 transcript，
+// 不需要回放历史来重建组件树（那是 A2UI 的需求）。
+type iterEnvelope struct {
+	events *agentEvents    // Agent 产出的事件
+	done   chan iterResult // handler → OnAgentEvents：本轮的消费结果
 }
 
-// iterResult 把结果从 HTTP handler 回传给 OnAgentEvents。
-type iterResult[M adk.MessageType] struct {
-	lastContent   string //这一轮 Agent 最后一条 assistant 文本回复的内容
-	intermediates []M    // 待持久化的消息(Assistant消息以及工具调用消息)
-	interruptID   string // 这一轮因审批被中断,值是触发中断的 interrupt 上下文 ID
-	msgIdx        int    //A2UI 组件树里"这一轮已经写到第几个 msg 卡片"的游标。中断时它告诉 OnAgentEvents已经落库到哪了
-	err           error
-}
+// iterResult 把一轮的消费结果从 HTTP handler 回传给 OnAgentEvents。
+//
+// 直接复用桥接层的 TurnResult：它已经携带待落库消息、中断 ID 与审批卡片 ID。
+// 参考实现里的 msgIdx 字段在 AG-UI 下无意义（那是 A2UI 的组件槽位游标），已去掉。
+type iterResult = aguibridge.TurnResult
 
-// getTurnState 根据SessionID拿取对应的 turn state。
-func getTurnState[M adk.MessageType](sessionID string) *sessionTurnState[M] {
-	val, _ := turnStates.LoadOrStore(sessionID, &sessionTurnState[M]{})
-	return val.(*sessionTurnState[M])
+// TurnResult 是一轮对话的结果，供 handler 判断该发什么终态事件。
+// 与 iterResult 同一类型，只是对外导出一个名字，免得上层去 import 桥接层。
+type TurnResult = aguibridge.TurnResult
+
+// getTurnState 根据 sessionID 拿取对应的 turn state，不存在则创建。
+func getTurnState(sessionID string) *sessionTurnState {
+	val, _ := turnStates.LoadOrStore(sessionID, &sessionTurnState{})
+	return val.(*sessionTurnState)
 }
 
 // deleteTurnState 移除 sessionID 对应的 turn state。
