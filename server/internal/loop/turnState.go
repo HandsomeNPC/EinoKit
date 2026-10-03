@@ -1,10 +1,3 @@
-// Package loop 负责一个会话的"轮次"生命周期：把 HTTP 请求里的用户消息 / 审批决定
-// 推进 adk.TurnLoop，再把 Agent 吐出的事件流交给 HTTP handler 翻译成 AG-UI 事件。
-//
-// 消息类型固定为 *schema.AgenticMessage：AG-UI 的 REASONING_* 事件依赖
-// schema.ContentBlockTypeReasoning，而该类型只存在于 AgenticMessage；且 AgenticMessage
-// 下工具结果就是普通消息事件（一个 FunctionToolResult 块），一个 switch 即可统一处理
-// reasoning / text / tool call / tool result，无需参考项目那套 msgops 泛型适配层。
 package loop
 
 import (
@@ -17,28 +10,16 @@ import (
 	"github.com/HandsomeNPC/EinoKit/internal/aguibridge"
 )
 
-// Msg 是本项目统一的消息类型。
-type Msg = aguibridge.Msg
-
-// turnLoop / agentEvents 是两个长类型的简写。
-type (
-	turnLoop    = adk.TurnLoop[*ChatItem, Msg]
-	agentEvents = adk.AsyncIterator[*adk.TypedAgentEvent[Msg]]
-)
-
-// 确保 Msg 就是 *schema.AgenticMessage（桥接层与本包必须说同一种消息）。
-var _ Msg = (*schema.AgenticMessage)(nil)
-
-// turnStates 按 sessionID 维护每个会话的 sessionTurnState。
-var turnStates = sync.Map{}
+// turnStateHolder 按 sessionID 维护每个会话的 sessionTurnState。
+var turnStateHolder = sync.Map{}
 
 // sessionTurnState 为一个会话持有 TurnLoop 与事件桥接通道。
 //
 // 注意 loop 的寿命长于单个 HTTP 请求：loop.Run 拿的是 background 派生的 context，
 // handler 只是某一轮事件迭代器的临时消费者。
 type sessionTurnState struct {
-	mu   sync.Mutex // 保证并发安全
-	loop *turnLoop  // 该会话当前的 TurnLoop，nil 表示没有进行中的轮次
+	mu   sync.Mutex                                       // 保证并发安全
+	loop *adk.TurnLoop[*ChatItem, *schema.AgenticMessage] // 该会话当前的 TurnLoop，nil 表示没有进行中的轮次
 	// cancelLoop 取消 loop 自己的 context。handler 超时放弃后，OnAgentEvents 可能
 	// 停在 <-done 上无人读，只有 ctx.Done() 能救它，否则 goroutine 与快照双泄漏。
 	cancelLoop  context.CancelFunc
@@ -78,8 +59,8 @@ type ApprovalResult struct {
 // 也没有 history 字段：AG-UI 是追加式事件协议，客户端自己持有 transcript，
 // 不需要回放历史来重建组件树（那是 A2UI 的需求）。
 type iterEnvelope struct {
-	events *agentEvents    // Agent 产出的事件
-	done   chan iterResult // handler → OnAgentEvents：本轮的消费结果
+	events *adk.AsyncIterator[*adk.TypedAgentEvent[*schema.AgenticMessage]] // Agent 产出的事件
+	done   chan iterResult                                                  // handler → OnAgentEvents：本轮的消费结果
 }
 
 // iterResult 把一轮的消费结果从 HTTP handler 回传给 OnAgentEvents。
@@ -94,11 +75,11 @@ type TurnResult = aguibridge.TurnResult
 
 // getTurnState 根据 sessionID 拿取对应的 turn state，不存在则创建。
 func getTurnState(sessionID string) *sessionTurnState {
-	val, _ := turnStates.LoadOrStore(sessionID, &sessionTurnState{})
+	val, _ := turnStateHolder.LoadOrStore(sessionID, &sessionTurnState{})
 	return val.(*sessionTurnState)
 }
 
 // deleteTurnState 移除 sessionID 对应的 turn state。
 func deleteTurnState(sessionID string) {
-	turnStates.Delete(sessionID)
+	turnStateHolder.Delete(sessionID)
 }

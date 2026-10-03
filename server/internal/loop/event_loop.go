@@ -36,7 +36,7 @@ const keepaliveInterval = 5 * time.Second
 
 // Deps 是 loop 层运行一轮所需的全部外部依赖。
 type Deps struct {
-	Agent adk.TypedAgent[Msg]
+	Agent adk.TypedAgent[*schema.AgenticMessage]
 	Store adk.CheckPointStore // checkpoint.Default() 可直接传入：两者是同一个接口别名
 	Repo  *repository.SessionRepository
 }
@@ -55,7 +55,7 @@ func RunChat(c *gin.Context, em *agui.Emitter, d Deps, sessionID, query string) 
 		ready, done := ts.rearmLocked()
 		ts.mu.Unlock()
 
-		if ok, _ := existing.Push(item, adk.WithPreempt[*ChatItem, Msg](adk.AfterToolCalls)); ok {
+		if ok, _ := existing.Push(item, adk.WithPreempt[*ChatItem, *schema.AgenticMessage](adk.AfterToolCalls)); ok {
 			return streamOneTurn(c, em, sessionID, ready, done, nil)
 		}
 
@@ -138,7 +138,7 @@ func (ts *sessionTurnState) startLoopLocked(d Deps, sessionID string, item *Chat
 
 // startLoopCleanup 等 loop 退出后把 ts.loop 置空并释放其 context，
 // 这样下一次请求会建一个全新的 loop，而不是去抢占一个已经死掉的。
-func startLoopCleanup(ts *sessionTurnState, l *turnLoop, sessionID string) {
+func startLoopCleanup(ts *sessionTurnState, l *adk.TurnLoop[*ChatItem, *schema.AgenticMessage], sessionID string) {
 	go func() {
 		state := l.Wait()
 
@@ -251,8 +251,8 @@ func stopKeepalive(stop, done chan struct{}) {
 //  6. 根据 OnAgentEvents 返回的 error 决定 ExitReason
 //
 // Store 与 CheckpointID 始终配置：首轮对话的中断必须落盘，之后的恢复才找得到它。
-func newLoop(d Deps, sessionID string) *turnLoop {
-	return adk.NewTurnLoop(adk.TurnLoopConfig[*ChatItem, Msg]{
+func newLoop(d Deps, sessionID string) *adk.TurnLoop[*ChatItem, *schema.AgenticMessage] {
+	return adk.NewTurnLoop(adk.TurnLoopConfig[*ChatItem, *schema.AgenticMessage]{
 		GenInput:      makeGenInput(d, sessionID),
 		GenResume:     makeGenResume(d, sessionID),
 		PrepareAgent:  makePrepareAgent(d),
@@ -266,8 +266,8 @@ func newLoop(d Deps, sessionID string) *turnLoop {
 //
 // 用户消息在这里落库而不是在 handler 里：GenInput 只会在上一轮的 OnAgentEvents
 // 把中间消息落完之后才触发，因此即便发生抢占，消息的入库顺序也与对话顺序一致。
-func makeGenInput(d Deps, sessionID string) func(context.Context, *turnLoop, []*ChatItem) (*adk.GenInputResult[*ChatItem, Msg], error) {
-	return func(ctx context.Context, l *turnLoop, items []*ChatItem) (*adk.GenInputResult[*ChatItem, Msg], error) {
+func makeGenInput(d Deps, sessionID string) func(context.Context, *adk.TurnLoop[*ChatItem, *schema.AgenticMessage], []*ChatItem) (*adk.GenInputResult[*ChatItem, *schema.AgenticMessage], error) {
+	return func(ctx context.Context, l *adk.TurnLoop[*ChatItem, *schema.AgenticMessage], items []*ChatItem) (*adk.GenInputResult[*ChatItem, *schema.AgenticMessage], error) {
 		// 取第一个带 query 的条目，其余留到后续轮次。
 		var consumed, remaining []*ChatItem
 		var queryItem *ChatItem
@@ -282,8 +282,8 @@ func makeGenInput(d Deps, sessionID string) func(context.Context, *turnLoop, []*
 		if queryItem == nil {
 			// 没有可处理的消息条目，停掉 loop。
 			l.Stop(adk.WithStopCause("没有待处理的消息条目"))
-			return &adk.GenInputResult[*ChatItem, Msg]{
-				Input:     &adk.TypedAgentInput[Msg]{Messages: []Msg{schema.UserAgenticMessage("done")}},
+			return &adk.GenInputResult[*ChatItem, *schema.AgenticMessage]{
+				Input:     &adk.TypedAgentInput[*schema.AgenticMessage]{Messages: []*schema.AgenticMessage{schema.UserAgenticMessage("done")}},
 				Remaining: items,
 			}, nil
 		}
@@ -301,8 +301,8 @@ func makeGenInput(d Deps, sessionID string) func(context.Context, *turnLoop, []*
 		}
 
 		log.Printf("[genInput] session=%s query=%q 历史消息=%d", sessionID, queryItem.Query, len(history))
-		return &adk.GenInputResult[*ChatItem, Msg]{
-			Input: &adk.TypedAgentInput[Msg]{
+		return &adk.GenInputResult[*ChatItem, *schema.AgenticMessage]{
+			Input: &adk.TypedAgentInput[*schema.AgenticMessage]{
 				Messages:        normalizeMessagesForModelInput(history),
 				EnableStreaming: true,
 			},
@@ -313,11 +313,11 @@ func makeGenInput(d Deps, sessionID string) func(context.Context, *turnLoop, []*
 }
 
 // makeGenResume 用审批结果恢复被中断的那一轮。
-func makeGenResume(d Deps, sessionID string) func(context.Context, *turnLoop, []*ChatItem, []*ChatItem, []*ChatItem) (*adk.GenResumeResult[*ChatItem, Msg], error) {
-	return func(ctx context.Context, _ *turnLoop, interruptedItems, unhandledItems, newItems []*ChatItem) (*adk.GenResumeResult[*ChatItem, Msg], error) {
+func makeGenResume(d Deps, sessionID string) func(context.Context, *adk.TurnLoop[*ChatItem, *schema.AgenticMessage], []*ChatItem, []*ChatItem, []*ChatItem) (*adk.GenResumeResult[*ChatItem, *schema.AgenticMessage], error) {
+	return func(ctx context.Context, _ *adk.TurnLoop[*ChatItem, *schema.AgenticMessage], interruptedItems, unhandledItems, newItems []*ChatItem) (*adk.GenResumeResult[*ChatItem, *schema.AgenticMessage], error) {
 		for _, item := range newItems {
 			if item.ApprovalResult != nil {
-				return &adk.GenResumeResult[*ChatItem, Msg]{
+				return &adk.GenResumeResult[*ChatItem, *schema.AgenticMessage]{
 					ResumeParams: &adk.ResumeParams{
 						Targets: map[string]any{item.InterruptID: item.ApprovalResult},
 					},
@@ -336,7 +336,7 @@ func makeGenResume(d Deps, sessionID string) func(context.Context, *turnLoop, []
 		}
 		reason := "用户发送了新消息，本次审批视为取消"
 		log.Printf("[genResume] session=%s 无审批条目，自动取消中断 %s", sessionID, sess.PendingInterruptID)
-		return &adk.GenResumeResult[*ChatItem, Msg]{
+		return &adk.GenResumeResult[*ChatItem, *schema.AgenticMessage]{
 			ResumeParams: &adk.ResumeParams{
 				Targets: map[string]any{
 					sess.PendingInterruptID: &ApprovalResult{Approved: false, DisapproveReason: &reason},
@@ -349,8 +349,8 @@ func makeGenResume(d Deps, sessionID string) func(context.Context, *turnLoop, []
 }
 
 // makePrepareAgent 每轮都返回同一个 Agent。
-func makePrepareAgent(d Deps) func(context.Context, *turnLoop, []*ChatItem) (adk.TypedAgent[Msg], error) {
-	return func(context.Context, *turnLoop, []*ChatItem) (adk.TypedAgent[Msg], error) {
+func makePrepareAgent(d Deps) func(context.Context, *adk.TurnLoop[*ChatItem, *schema.AgenticMessage], []*ChatItem) (adk.TypedAgent[*schema.AgenticMessage], error) {
+	return func(context.Context, *adk.TurnLoop[*ChatItem, *schema.AgenticMessage], []*ChatItem) (adk.TypedAgent[*schema.AgenticMessage], error) {
 		return d.Agent, nil
 	}
 }
@@ -358,8 +358,8 @@ func makePrepareAgent(d Deps) func(context.Context, *turnLoop, []*ChatItem) (adk
 // makeOnAgentEvents 是 TurnLoop 与 HTTP handler 之间的桥。
 //
 // 它把事件迭代器递给 handler，等 handler 消费完，然后负责落库与中断状态维护。
-func makeOnAgentEvents(d Deps, sessionID string) func(context.Context, *adk.TurnContext[*ChatItem, Msg], *agentEvents) error {
-	return func(ctx context.Context, _ *adk.TurnContext[*ChatItem, Msg], evs *agentEvents) error {
+func makeOnAgentEvents(d Deps, sessionID string) func(context.Context, *adk.TurnContext[*ChatItem, *schema.AgenticMessage], *adk.AsyncIterator[*adk.TypedAgentEvent[*schema.AgenticMessage]]) error {
+	return func(ctx context.Context, _ *adk.TurnContext[*ChatItem, *schema.AgenticMessage], evs *adk.AsyncIterator[*adk.TypedAgentEvent[*schema.AgenticMessage]]) error {
 		ts := getTurnState(sessionID)
 
 		// 在锁内快照通道，避免与正在为抢占重建通道的 handler 竞态。

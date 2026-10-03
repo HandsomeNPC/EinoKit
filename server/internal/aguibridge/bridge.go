@@ -22,9 +22,6 @@ import (
 	"github.com/cloudwego/eino/schema"
 )
 
-// Msg 是本桥接层处理的消息类型。
-type Msg = *schema.AgenticMessage
-
 // ApprovalToolName 是审批卡片在 AG-UI 侧的工具名。
 // 前端用 useAgentToolcall 注册同名工具（且不提供 handler）即成为可交互审批卡片。
 const ApprovalToolName = "approval_request"
@@ -40,9 +37,9 @@ type approvalInfo interface {
 
 // TurnResult 是一轮事件消费完后交回给 loop 层的结果。
 type TurnResult struct {
-	LastContent   string // 本轮最后一段 assistant 正文（日志用）
-	Intermediates []Msg  // 待落库的消息（assistant 文本/工具调用、工具结果）
-	Err           error  // 事件流自身的错误
+	LastContent   string                   // 本轮最后一段 assistant 正文（日志用）
+	Intermediates []*schema.AgenticMessage // 待落库的消息（assistant 文本/工具调用、工具结果）
+	Err           error                    // 事件流自身的错误
 
 	// 以下字段仅在发生审批中断时非零。
 	InterruptID        string // adk 的 InterruptCtx.ID
@@ -64,7 +61,7 @@ func (r TurnResult) Interrupted() bool { return r.InterruptID != "" }
 // 原来那张卡片上（而不是新开一张）。新一轮传 nil。
 //
 // 不发 RUN_STARTED / RUN_FINISHED —— 生命周期事件由 handler 负责。
-func StreamTurn(em *agui.Emitter, seedToolCallIDs map[string]string, evs *adk.AsyncIterator[*adk.TypedAgentEvent[Msg]]) TurnResult {
+func StreamTurn(em *agui.Emitter, seedToolCallIDs map[string]string, evs *adk.AsyncIterator[*adk.TypedAgentEvent[*schema.AgenticMessage]]) TurnResult {
 	var out TurnResult
 
 	bc := &blockCtx{toolCallIDs: map[string]string{}}

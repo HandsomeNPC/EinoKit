@@ -17,7 +17,7 @@ import (
 	"github.com/HandsomeNPC/EinoKit/internal/repository"
 )
 
-// messageKindAgentic 本项目消息表示固定为 agentic（见 loop.Msg 的说明）。
+// messageKindAgentic 本项目消息表示固定为 agentic（见 loop 包文档与 schema.AgenticMessage）。
 const messageKindAgentic = "agentic"
 
 type SessionService struct{}

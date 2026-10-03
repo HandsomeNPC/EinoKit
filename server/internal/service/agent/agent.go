@@ -8,8 +8,7 @@ import (
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
-
-	"github.com/HandsomeNPC/EinoKit/internal/loop"
+	"github.com/cloudwego/eino/schema"
 )
 
 // instruction 是 Agent 的系统提示词。
@@ -21,7 +20,7 @@ const instruction = `你是 EinoKit 的奶茶点单助手。
 
 var (
 	agentOnce sync.Once
-	agentInst adk.TypedAgent[loop.Msg]
+	agentInst adk.TypedAgent[*schema.AgenticMessage]
 	agentErr  error
 )
 
@@ -29,7 +28,7 @@ var (
 //
 // 模型构造会建 HTTP client、解析工具 schema，不能每个请求做一次。
 // 注意 sync.Once 会把首次失败（如 API Key 配错）缓存到进程结束。
-func Default(ctx context.Context) (adk.TypedAgent[loop.Msg], error) {
+func Default(ctx context.Context) (adk.TypedAgent[*schema.AgenticMessage], error) {
 	agentOnce.Do(func() {
 		agentInst, agentErr = build(ctx)
 	})
@@ -40,7 +39,7 @@ func Default(ctx context.Context) (adk.TypedAgent[loop.Msg], error) {
 //
 // 用 ChatModelAgent 而非 deep agent：后者会拖进 LocalBackend（文件系统 + shell，
 // shell 在 Windows 上不可用）、planner 与子 agent，买奶茶一个都不需要。
-func build(ctx context.Context) (adk.TypedAgent[loop.Msg], error) {
+func build(ctx context.Context) (adk.TypedAgent[*schema.AgenticMessage], error) {
 	cm, err := newAgenticModel(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("agent: 初始化模型失败: %w", err)
@@ -51,7 +50,7 @@ func build(ctx context.Context) (adk.TypedAgent[loop.Msg], error) {
 		return nil, fmt.Errorf("agent: 初始化下单工具失败: %w", err)
 	}
 
-	a, err := adk.NewTypedChatModelAgent(ctx, &adk.TypedChatModelAgentConfig[loop.Msg]{
+	a, err := adk.NewTypedChatModelAgent(ctx, &adk.TypedChatModelAgentConfig[*schema.AgenticMessage]{
 		Name:        "EinoKitMilkTeaAgent",
 		Description: "奶茶点单助手，下单前需人工审批。",
 		Instruction: instruction,
@@ -62,7 +61,7 @@ func build(ctx context.Context) (adk.TypedAgent[loop.Msg], error) {
 			},
 		},
 		MaxIterations: 20,
-		Handlers: []adk.TypedChatModelAgentMiddleware[loop.Msg]{
+		Handlers: []adk.TypedChatModelAgentMiddleware[*schema.AgenticMessage]{
 			newApprovalMiddleware(),
 		},
 	})

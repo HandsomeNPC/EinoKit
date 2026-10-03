@@ -6,6 +6,7 @@ import (
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/tool"
+	"github.com/cloudwego/eino/schema"
 
 	"github.com/HandsomeNPC/EinoKit/internal/loop"
 )
@@ -15,12 +16,12 @@ import (
 //
 // 依赖 TurnLoop 配了 CheckPointStore——中断状态要存得下来才恢复得回去。
 type approvalMiddleware struct {
-	*adk.TypedBaseChatModelAgentMiddleware[loop.Msg]
+	*adk.TypedBaseChatModelAgentMiddleware[*schema.AgenticMessage]
 }
 
-func newApprovalMiddleware() adk.TypedChatModelAgentMiddleware[loop.Msg] {
+func newApprovalMiddleware() adk.TypedChatModelAgentMiddleware[*schema.AgenticMessage] {
 	return &approvalMiddleware{
-		TypedBaseChatModelAgentMiddleware: &adk.TypedBaseChatModelAgentMiddleware[loop.Msg]{},
+		TypedBaseChatModelAgentMiddleware: &adk.TypedBaseChatModelAgentMiddleware[*schema.AgenticMessage]{},
 	}
 }
 

@@ -21,7 +21,7 @@ const (
 )
 
 // marshalMsg 把一条消息序列化成入库用的 JSON。
-func marshalMsg(m Msg) (string, error) {
+func marshalMsg(m *schema.AgenticMessage) (string, error) {
 	data, err := json.Marshal(normalizeForSession(m))
 	if err != nil {
 		return "", fmt.Errorf("loop: 序列化消息失败: %w", err)
@@ -30,7 +30,7 @@ func marshalMsg(m Msg) (string, error) {
 }
 
 // unmarshalMsg 把库里的一行 payload 还原成消息。
-func unmarshalMsg(payload []byte) (Msg, error) {
+func unmarshalMsg(payload []byte) (*schema.AgenticMessage, error) {
 	var msg schema.AgenticMessage
 	if err := json.Unmarshal(payload, &msg); err != nil {
 		return nil, fmt.Errorf("loop: 反序列化消息失败: %w", err)
@@ -40,12 +40,12 @@ func unmarshalMsg(payload []byte) (Msg, error) {
 
 // loadHistory 按追加顺序读出会话全部消息。
 // 单行解析失败只记日志跳过——一条坏数据不该让整个会话打不开。
-func loadHistory(ctx context.Context, repo *repository.SessionRepository, sessionID string) ([]Msg, error) {
+func loadHistory(ctx context.Context, repo *repository.SessionRepository, sessionID string) ([]*schema.AgenticMessage, error) {
 	rows, err := repo.SelectMessages(ctx, sessionID)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]Msg, 0, len(rows))
+	out := make([]*schema.AgenticMessage, 0, len(rows))
 	for _, row := range rows {
 		msg, err := unmarshalMsg(row.Payload)
 		if err != nil {
@@ -62,7 +62,7 @@ func loadHistory(ctx context.Context, repo *repository.SessionRepository, sessio
 // agentic 模型实现会把 Responses API 的 item ID 挂在 content block 上，回放
 // assistant 消息 / reasoning 块 / 工具调用时**必须**带上这些 ID，否则 API 会拒绝；
 // 同时流式专用的 StreamingMeta 必须剥掉。所以写入和读取两侧都要过这一道。
-func normalizeForSession(msg Msg) Msg {
+func normalizeForSession(msg *schema.AgenticMessage) *schema.AgenticMessage {
 	if msg == nil {
 		return nil
 	}
@@ -82,8 +82,8 @@ func normalizeForSession(msg Msg) Msg {
 
 // normalizeMessagesForModelInput 在把历史喂回模型前做一遍归一化。
 // 当前与 normalizeForSession 等价；留出这层边界，便于日后区分入库格式与模型入参规则。
-func normalizeMessagesForModelInput(msgs []Msg) []Msg {
-	out := make([]Msg, 0, len(msgs))
+func normalizeMessagesForModelInput(msgs []*schema.AgenticMessage) []*schema.AgenticMessage {
+	out := make([]*schema.AgenticMessage, 0, len(msgs))
 	for _, m := range msgs {
 		out = append(out, normalizeForSession(m))
 	}
@@ -139,7 +139,7 @@ func cloneMap(in map[string]any) map[string]any {
 }
 
 // userText 取用户消息的纯文本，用于给会话生成标题。
-func userText(msg Msg) string {
+func userText(msg *schema.AgenticMessage) string {
 	if msg == nil || msg.Role != schema.AgenticRoleTypeUser {
 		return ""
 	}

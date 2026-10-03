@@ -10,7 +10,7 @@ import "time"
 type Session struct {
 	ID                 string    `gorm:"column:id;type:varchar(64);primaryKey" json:"id"`
 	Title              string    `gorm:"column:title;type:varchar(255);not null;default:''" json:"title"`
-	MessageKind        string    `gorm:"column:message_kind;type:varchar(32);not null;default:''" json:"messageKind"`         // 固定 agentic，见 loop.Msg
+	MessageKind        string    `gorm:"column:message_kind;type:varchar(32);not null;default:''" json:"messageKind"`         // 固定 agentic，见 schema.AgenticMessage
 	PendingInterruptID string    `gorm:"column:pending_interrupt_id;type:text;not null;default:''" json:"pendingInterruptId"` // 非空表示 agent 正等待人工审批
 	PendingApproval    string    `gorm:"column:pending_approval;type:text;not null;default:''" json:"pendingApproval"`        // 待审批上下文 JSON，见 loop.PendingApproval
 	MsgIdx             int       `gorm:"column:msg_idx;not null;default:0" json:"msgIdx"`                                     // 原 A2UI 组件槽位计数；AG-UI 下不再使用，保留列备用
