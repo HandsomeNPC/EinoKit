@@ -29,8 +29,6 @@ func NewTurnLoop(threadID, runID string, emitter *agui.Emitter) *adk.TurnLoop[*C
 // 根据 threadID 查 ThreadInfo 拿到 AgentType，再从 registry 取对应 Agent。
 func makePrepareAgent(threadID string) func(ctx context.Context, loop *adk.TurnLoop[*ChatItem, *schema.AgenticMessage], consumed []*ChatItem) (adk.TypedAgent[*schema.AgenticMessage], error) {
 	return func(ctx context.Context, loop *adk.TurnLoop[*ChatItem, *schema.AgenticMessage], consumed []*ChatItem) (adk.TypedAgent[*schema.AgenticMessage], error) {
-		_ = consumed
-
 		info, err := thread.SelectByID(threadID)
 		if err != nil {
 			return nil, err
