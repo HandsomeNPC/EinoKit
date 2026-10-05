@@ -3,27 +3,20 @@ package turnloop
 import (
 	"context"
 
-	"github.com/ag-ui-protocol/ag-ui/sdks/community/go/pkg/core/events"
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/schema"
 
 	"github.com/HandsomeNPC/EinoKit/internal/agents"
+	"github.com/HandsomeNPC/EinoKit/internal/agui"
 	"github.com/HandsomeNPC/EinoKit/internal/checkpoint"
 	"github.com/HandsomeNPC/EinoKit/internal/memory/thread"
 )
 
-// *schema.AgenticMessage 是本包固定的消息类型，即 EinoKit 全局使用的 agentic 消息。
-
-// NewTurnLoop 装配一个 TurnLoop。threadID 同时作为 checkpoint key,
-// runID 标识本次请求(一次 HTTP /chat = 一个 run),由本函数用
-// events.GenerateRunID() 生成,GenInput / OnAgentEvents 共用同一个
-// runID,把本轮消息归到同一行 payload。
-func NewTurnLoop(threadID string) *adk.TurnLoop[*ChatItem, *schema.AgenticMessage] {
-	runID := events.GenerateRunID()
+func NewTurnLoop(threadID, runID string, emitter *agui.Emitter) *adk.TurnLoop[*ChatItem, *schema.AgenticMessage] {
 	cfg := adk.TurnLoopConfig[*ChatItem, *schema.AgenticMessage]{
 		GenInput:      makeGenInput(threadID, runID), //每轮开始时调用，决定"这一轮 Agent 看到什么"
 		PrepareAgent:  makePrepareAgent(threadID),    //每轮调用一次，返回本轮使用的 Agent
-		OnAgentEvents: makeOnAgentEvents(),           //接收Agent的事件流，负责渲染输出和持久化中间消息
+		OnAgentEvents: makeOnAgentEvents(emitter),    //接收Agent的事件流，负责渲染输出和持久化中间消息
 		//以下三个字段用于声明式 checkpoint（审批恢复）
 		GenResume:    makeGenResume(),
 		Store:        checkpoint.GetInstance(),
