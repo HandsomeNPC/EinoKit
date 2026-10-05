@@ -10,6 +10,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 
 	"github.com/HandsomeNPC/EinoKit/internal/memory/thread"
+	"github.com/HandsomeNPC/EinoKit/internal/msgops"
 )
 
 // makeGenInput 返回 GenInput 回调。每轮开始时调用,从队列里的 ChatItem
@@ -41,8 +42,9 @@ func makeGenInput(threadID, runID string) func(ctx context.Context, loop *adk.Tu
 		}
 
 		// 现在持久化用户消息 —— GenInput 只在前一轮的 OnAgentEvents
-		// 完成中间消息持久化之后才触发,因此会话历史的顺序得以保证正确。
+		// 完成其中间消息持久化之后才触发,因此会话历史的顺序得以保证正确。
 		userMsg := schema.UserAgenticMessage(queryItem.Query)
+		userMsg = msgops.NormalizeForSession(userMsg)
 		if payload, mErr := json.Marshal(userMsg); mErr == nil {
 			if appendErr := thread.AppendMessage(threadID, runID, string(payload)); appendErr != nil {
 				log.Printf("warn: failed to persist user message: %v", appendErr)
@@ -51,7 +53,8 @@ func makeGenInput(threadID, runID string) func(ctx context.Context, loop *adk.Tu
 			log.Printf("warn: failed to marshal user message: %v", mErr)
 		}
 
-		runMessages := buildRunMessages(threadID, loadHistory(threadID))
+		history := loadHistory(threadID)
+		runMessages := buildRunMessages(threadID, history)
 
 		log.Printf("[genInput] thread=%s query=%q messages=%d", threadID, queryItem.Query, len(runMessages))
 
@@ -83,10 +86,10 @@ func buildRunMessages(threadID string, history []*schema.AgenticMessage) []*sche
 		// TODO: 按需追加项目根目录、上传文件列表、业务规则等上下文。
 	}
 	ctx := strings.Join(lines, "\n")
-	out := make([]*schema.AgenticMessage, 0, len(history)+1)
-	out = append(out, schema.UserAgenticMessage(ctx))
-	out = append(out, history...)
-	return out
+	runMessages := make([]*schema.AgenticMessage, 0, len(history)+1)
+	runMessages = append(runMessages, schema.UserAgenticMessage(ctx))
+	runMessages = append(runMessages, msgops.NormalizeMessagesForModelInput(history)...)
+	return runMessages
 }
 
 // loadHistory 从 thread_message 表读出全部消息并反序列化为 AgenticMessage
@@ -107,7 +110,7 @@ func loadHistory(threadID string) []*schema.AgenticMessage {
 		}
 		for i := range batch {
 			if batch[i] != nil {
-				msgs = append(msgs, batch[i])
+				msgs = append(msgs, msgops.NormalizeForSession(batch[i]))
 			}
 		}
 	}
