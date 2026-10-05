@@ -88,16 +88,16 @@ func makeOnAgentEvents(threadID, runID string, emitter *agui.Emitter) func(ctx c
 				}
 			}
 
-			// 4) 退出动作:agent 本轮完成。发 RUN_FINISHED(success),break 后 flush。
+			// 4) 退出动作:agent 本轮完成。break 后由统一收尾发 RUN_FINISHED(success)。
 			if event.Action != nil && event.Action.Exit {
-				if !writerBroken {
-					emitter.RunFinishedSuccess()
-					markBroken()
-				}
 				break
 			}
 		}
 		flushPending(threadID, runID, &pending)
+		if !writerBroken {
+			emitter.RunFinishedSuccess()
+			markBroken()
+		}
 		return nil
 	}
 }
