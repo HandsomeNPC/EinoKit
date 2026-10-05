@@ -18,11 +18,11 @@ func Insert(t *ThreadInfo) error {
 	if t == nil {
 		return fmt.Errorf("thread: 会话为空")
 	}
-	if t.ID == "" {
+	if t.ThreadID == "" {
 		return fmt.Errorf("thread: 会话主键为空")
 	}
 	if err := database.GetInstance().WithContext(context.Background()).Create(t).Error; err != nil {
-		return fmt.Errorf("thread: 插入会话 id=%s 失败: %w", t.ID, err)
+		return fmt.Errorf("thread: 插入会话 id=%s 失败: %w", t.ThreadID, err)
 	}
 	return nil
 }
@@ -34,7 +34,7 @@ func SelectByID(id string) (*ThreadInfo, error) {
 	}
 
 	var t ThreadInfo
-	err := database.GetInstance().WithContext(context.Background()).Where("id = ?", id).First(&t).Error
+	err := database.GetInstance().WithContext(context.Background()).Where("thread_id = ?", id).First(&t).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrThreadNotFound
@@ -67,7 +67,7 @@ func DeleteByID(id string) error {
 		if err := tx.Where("thread_id = ?", id).Delete(&ThreadMessage{}).Error; err != nil {
 			return fmt.Errorf("thread: 删除会话消息 id=%s 失败: %w", id, err)
 		}
-		res := tx.Where("id = ?", id).Delete(&ThreadInfo{})
+		res := tx.Where("thread_id = ?", id).Delete(&ThreadInfo{})
 		if res.Error != nil {
 			return fmt.Errorf("thread: 删除会话 id=%s 失败: %w", id, res.Error)
 		}
@@ -109,27 +109,4 @@ func SelectMessages(threadID string) ([]*ThreadMessage, error) {
 		return nil, fmt.Errorf("thread: 查询会话消息 id=%s 失败: %w", threadID, err)
 	}
 	return rows, nil
-}
-
-// UpdateMsgIdx 保存 A2UI 组件槽位计数，对标 mem.Session.SetMsgIdx。
-// 同样走单列 Update：idx=0 是合法值，Updates(struct) 会漏写。
-// 主键不存在时返回 ErrThreadNotFound。
-//
-// 注意：AG-UI 是追加式事件协议，没有组件槽位概念，本方法当前无调用方，
-// 保留以备将来需要位置游标的渲染协议。
-func UpdateMsgIdx(id string, idx int) error {
-	if id == "" {
-		return fmt.Errorf("thread: 会话主键为空")
-	}
-
-	res := database.GetInstance().WithContext(context.Background()).Model(&ThreadInfo{}).
-		Where("id = ?", id).
-		Update("msg_idx", idx)
-	if res.Error != nil {
-		return fmt.Errorf("thread: 更新会话槽位计数 id=%s 失败: %w", id, res.Error)
-	}
-	if res.RowsAffected == 0 {
-		return ErrThreadNotFound
-	}
-	return nil
 }
