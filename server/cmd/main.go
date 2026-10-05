@@ -10,7 +10,6 @@ import (
 	"github.com/HandsomeNPC/EinoKit/internal/memory"
 	"github.com/HandsomeNPC/EinoKit/internal/redis"
 	"github.com/HandsomeNPC/EinoKit/internal/router"
-	"github.com/HandsomeNPC/EinoKit/internal/service/agent"
 )
 
 func main() {
@@ -30,8 +29,8 @@ func main() {
 
 	// 须在 redis.Init 之后：TurnLoop 的 checkpoint 快照落在这里。
 	// Prefix/TTL 由 application.yaml 的 checkpoint 段配置；TTL 留空则永久存储。
+	// loop 包重写后，在此重新接入 agent.ThreadSvcApp = agent.NewThreadService(checkpoint.GetInstance())。
 	checkpoint.Init()
-	agent.ThreadSvcApp = agent.NewThreadService(checkpoint.GetInstance())
 
 	r := router.InitRouter()
 	router.InitServer(r)
