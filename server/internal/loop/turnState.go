@@ -17,13 +17,13 @@ func init() {
 	schema.RegisterName[ChatItem]("einokit_chat_item")
 }
 
-// turnStateHolder 按 sessionID 维护每个会话的 sessionTurnState。
+// turnStateHolder 按 threadID 维护每个会话的 threadTurnState。
 var turnStateHolder = sync.Map{}
 
-// sessionTurnState 为一个会话持有 TurnLoop 与事件桥接通道。
+// threadTurnState 为一个会话持有 TurnLoop 与事件桥接通道。
 // loop的寿命长于单个 HTTP 请求: loop.Run 拿的是 background 派生的 context，
 // handler 只是某一轮事件迭代器的临时消费者。
-type sessionTurnState struct {
+type threadTurnState struct {
 	mu   sync.Mutex                                       // 保证并发安全
 	loop *adk.TurnLoop[*ChatItem, *schema.AgenticMessage] // 该会话当前的 TurnLoop，nil 表示没有进行中的轮次
 	// cancelLoop 取消 loop 自己的 context。handler 超时放弃后，OnAgentEvents 可能
@@ -58,13 +58,13 @@ type TurnResult struct {
 	Err           error                    // 事件流自身的错误
 }
 
-// getTurnState 根据 sessionID 拿取对应的 turn state，不存在则创建。
-func getTurnState(sessionID string) *sessionTurnState {
-	val, _ := turnStateHolder.LoadOrStore(sessionID, &sessionTurnState{})
-	return val.(*sessionTurnState)
+// getTurnState 根据 threadID 拿取对应的 turn state，不存在则创建。
+func getTurnState(threadID string) *threadTurnState {
+	val, _ := turnStateHolder.LoadOrStore(threadID, &threadTurnState{})
+	return val.(*threadTurnState)
 }
 
-// deleteTurnState 移除 sessionID 对应的 turn state。
-func deleteTurnState(sessionID string) {
-	turnStateHolder.Delete(sessionID)
+// deleteTurnState 移除 threadID 对应的 turn state。
+func deleteTurnState(threadID string) {
+	turnStateHolder.Delete(threadID)
 }

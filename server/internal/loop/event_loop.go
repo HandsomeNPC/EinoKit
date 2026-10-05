@@ -12,7 +12,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 	"github.com/gin-gonic/gin"
 
-	"github.com/HandsomeNPC/EinoKit/internal/repository"
+	"github.com/HandsomeNPC/EinoKit/internal/memory/thread"
 )
 
 // errSuperseded 表示本轮已被更新的请求取代。
@@ -32,41 +32,41 @@ const keepaliveInterval = 5 * time.Second
 type Deps struct {
 	Agent adk.TypedAgent[*schema.AgenticMessage]
 	Store adk.CheckPointStore // checkpoint.Default() 可直接传入：两者是同一个接口别名
-	Repo  *repository.SessionRepository
+	RunID string              // 本轮对话的 AG-UI run ID；写入 thread_message.run_id，一轮产生的所有消息共享
 }
 
 // RunChat 处理一条新的用户消息：为会话创建或抢占 TurnLoop，
 // 把本轮事件翻译成 AG-UI 事件写进 SSE 流，返回本轮结果。
-func RunChat(c *gin.Context, em *agui.Emitter, d Deps, sessionID, query string) (iterResult, error) {
+func RunChat(c *gin.Context, em *agui.Emitter, d Deps, threadID, query string) (iterResult, error) {
 	item := &ChatItem{Query: query}
-	ts := getTurnState(sessionID)
+	ts := getTurnState(threadID)
 
 	ts.mu.Lock()
 	if ts.loop != nil {
 		// 已有 loop：尝试抢占（在工具调用边界打断当前轮）。
 		existing := ts.loop
-		log.Printf("[chat] session=%s 抢占当前轮次", sessionID)
+		log.Printf("[chat] thread=%s 抢占当前轮次", threadID)
 		ready, done := ts.rearmLocked()
 		ts.mu.Unlock()
 
 		if ok, _ := existing.Push(item, adk.WithPreempt[*ChatItem, *schema.AgenticMessage](adk.AfterToolCalls)); ok {
-			return streamOneTurn(c, em, sessionID, ready, done)
+			return streamOneTurn(c, em, threadID, ready, done)
 		}
 
 		// 推不进去说明 loop 已经死了（例如上一轮出错），建新的。
-		log.Printf("[chat] session=%s 旧 loop 已停止，新建 loop", sessionID)
+		log.Printf("[chat] thread=%s 旧 loop 已停止，新建 loop", threadID)
 		ts.mu.Lock()
 	}
 
-	ready, done := ts.startLoopLocked(d, sessionID, item)
+	ready, done := ts.startLoopLocked(d, threadID, item)
 	ts.mu.Unlock()
-	return streamOneTurn(c, em, sessionID, ready, done)
+	return streamOneTurn(c, em, threadID, ready, done)
 }
 
 // rearmLocked 换上一对新的桥接通道，并关闭旧的 handlerDone 通知前一个 handler 退出。
 // 调用方必须持有 ts.mu。返回的是局部引用——后续等待只认它们，
 // 这样并发抢占替换了 ts 上的通道也不会让本 handler 停在没人投递的旧通道上。
-func (ts *sessionTurnState) rearmLocked() (chan iterEnvelope, chan struct{}) {
+func (ts *threadTurnState) rearmLocked() (chan iterEnvelope, chan struct{}) {
 	if ts.handlerDone != nil {
 		close(ts.handlerDone)
 	}
@@ -76,10 +76,10 @@ func (ts *sessionTurnState) rearmLocked() (chan iterEnvelope, chan struct{}) {
 }
 
 // startLoopLocked 新建 loop、推入首个条目并启动。调用方必须持有 ts.mu。
-func (ts *sessionTurnState) startLoopLocked(d Deps, sessionID string, item *ChatItem) (chan iterEnvelope, chan struct{}) {
+func (ts *threadTurnState) startLoopLocked(d Deps, threadID string, item *ChatItem) (chan iterEnvelope, chan struct{}) {
 	ready, done := ts.rearmLocked()
 
-	l := newLoop(d, sessionID)
+	l := newLoop(d, threadID)
 	ts.loop = l
 
 	// loop 的寿命长于 HTTP 请求，所以 context 必须来自 Background；
@@ -89,13 +89,13 @@ func (ts *sessionTurnState) startLoopLocked(d Deps, sessionID string, item *Chat
 
 	l.Push(item)
 	l.Run(loopCtx)
-	startLoopCleanup(ts, l, sessionID)
+	startLoopCleanup(ts, l, threadID)
 	return ready, done
 }
 
 // startLoopCleanup 等 loop 退出后把 ts.loop 置空并释放其 context，
 // 这样下一次请求会建一个全新的 loop，而不是去抢占一个已经死掉的。
-func startLoopCleanup(ts *sessionTurnState, l *adk.TurnLoop[*ChatItem, *schema.AgenticMessage], sessionID string) {
+func startLoopCleanup(ts *threadTurnState, l *adk.TurnLoop[*ChatItem, *schema.AgenticMessage], threadID string) {
 	go func() {
 		state := l.Wait()
 
@@ -111,12 +111,12 @@ func startLoopCleanup(ts *sessionTurnState, l *adk.TurnLoop[*ChatItem, *schema.A
 
 		switch {
 		case state.ExitReason == nil:
-			log.Printf("[loop] session=%s 正常退出", sessionID)
+			log.Printf("[loop] thread=%s 正常退出", threadID)
 		default:
-			log.Printf("[loop] session=%s 退出: %v", sessionID, state.ExitReason)
+			log.Printf("[loop] thread=%s 退出: %v", threadID, state.ExitReason)
 		}
 		if state.CheckpointErr != nil {
-			log.Printf("[loop] session=%s checkpoint 保存失败: %v", sessionID, state.CheckpointErr)
+			log.Printf("[loop] thread=%s checkpoint 保存失败: %v", threadID, state.CheckpointErr)
 		}
 	}()
 }
@@ -125,7 +125,7 @@ func startLoopCleanup(ts *sessionTurnState, l *adk.TurnLoop[*ChatItem, *schema.A
 //
 // 在等待期间开一个保活 goroutine：抢占场景下上一轮可能要排空几十秒，
 // 期间什么都不写可能让浏览器/中间代理认为连接已失活。
-func streamOneTurn(c *gin.Context, em *agui.Emitter, sessionID string,
+func streamOneTurn(c *gin.Context, em *agui.Emitter, threadID string,
 	ready chan iterEnvelope, handlerDone chan struct{},
 ) (iterResult, error) {
 	kaStop, kaDone := startKeepalive(c)
@@ -137,7 +137,7 @@ func streamOneTurn(c *gin.Context, em *agui.Emitter, sessionID string,
 	case <-handlerDone:
 		// 另一次抢占接管了本会话，本轮已被取代。
 		stopKeepalive(kaStop, kaDone)
-		log.Printf("[chat] session=%s 本轮被更新的请求取代", sessionID)
+		log.Printf("[chat] thread=%s 本轮被更新的请求取代", threadID)
 		return iterResult{}, errSuperseded
 	case <-time.After(agentStartTimeout):
 		stopKeepalive(kaStop, kaDone)
@@ -151,9 +151,9 @@ func streamOneTurn(c *gin.Context, em *agui.Emitter, sessionID string,
 
 	switch {
 	case result.Err != nil:
-		log.Printf("[chat] session=%s 流式出错: %v", sessionID, result.Err)
+		log.Printf("[chat] thread=%s 流式出错: %v", threadID, result.Err)
 	default:
-		log.Printf("[chat] session=%s 完成，回复 %d 字", sessionID, len([]rune(result.LastContent)))
+		log.Printf("[chat] thread=%s 完成，回复 %d 字", threadID, len([]rune(result.LastContent)))
 	}
 	return result, nil
 }
@@ -203,13 +203,13 @@ func stopKeepalive(stop, done chan struct{}) {
 //  6. 根据 OnAgentEvents 返回的 error 决定 ExitReason
 //
 // Store 与 CheckpointID 始终配置，供 TurnLoop 保存快照。
-func newLoop(d Deps, sessionID string) *adk.TurnLoop[*ChatItem, *schema.AgenticMessage] {
+func newLoop(d Deps, threadID string) *adk.TurnLoop[*ChatItem, *schema.AgenticMessage] {
 	return adk.NewTurnLoop(adk.TurnLoopConfig[*ChatItem, *schema.AgenticMessage]{
-		GenInput:      makeGenInput(d, sessionID),
+		GenInput:      makeGenInput(d, threadID),
 		PrepareAgent:  makePrepareAgent(d),
-		OnAgentEvents: makeOnAgentEvents(d, sessionID),
+		OnAgentEvents: makeOnAgentEvents(d, threadID),
 		Store:         d.Store,
-		CheckpointID:  sessionID, // 一个会话一份 checkpoint
+		CheckpointID:  threadID, // 一个会话一份 checkpoint
 	})
 }
 
@@ -217,7 +217,7 @@ func newLoop(d Deps, sessionID string) *adk.TurnLoop[*ChatItem, *schema.AgenticM
 //
 // 用户消息在这里落库而不是在 handler 里：GenInput 只会在上一轮的 OnAgentEvents
 // 把中间消息落完之后才触发，因此即便发生抢占，消息的入库顺序也与对话顺序一致。
-func makeGenInput(d Deps, sessionID string) func(context.Context, *adk.TurnLoop[*ChatItem, *schema.AgenticMessage], []*ChatItem) (*adk.GenInputResult[*ChatItem, *schema.AgenticMessage], error) {
+func makeGenInput(d Deps, threadID string) func(context.Context, *adk.TurnLoop[*ChatItem, *schema.AgenticMessage], []*ChatItem) (*adk.GenInputResult[*ChatItem, *schema.AgenticMessage], error) {
 	return func(ctx context.Context, l *adk.TurnLoop[*ChatItem, *schema.AgenticMessage], items []*ChatItem) (*adk.GenInputResult[*ChatItem, *schema.AgenticMessage], error) {
 		// 取第一个带 query 的条目，其余留到后续轮次。
 		var consumed, remaining []*ChatItem
@@ -241,17 +241,17 @@ func makeGenInput(d Deps, sessionID string) func(context.Context, *adk.TurnLoop[
 
 		userMsg := schema.UserAgenticMessage(queryItem.Query)
 		if payload, err := marshalMsg(userMsg); err != nil {
-			log.Printf("[genInput] session=%s 序列化用户消息失败: %v", sessionID, err)
-		} else if err := d.Repo.AppendMessage(ctx, sessionID, payload); err != nil {
-			log.Printf("[genInput] session=%s 落库用户消息失败: %v", sessionID, err)
+			log.Printf("[genInput] thread=%s 序列化用户消息失败: %v", threadID, err)
+		} else if err := thread.AppendMessage(threadID, d.RunID, payload); err != nil {
+			log.Printf("[genInput] thread=%s 落库用户消息失败: %v", threadID, err)
 		}
 
-		history, err := loadHistory(ctx, d.Repo, sessionID)
+		history, err := loadHistory(threadID)
 		if err != nil {
 			return nil, fmt.Errorf("loop: 读取会话历史失败: %w", err)
 		}
 
-		log.Printf("[genInput] session=%s query=%q 历史消息=%d", sessionID, queryItem.Query, len(history))
+		log.Printf("[genInput] thread=%s query=%q 历史消息=%d", threadID, queryItem.Query, len(history))
 		return &adk.GenInputResult[*ChatItem, *schema.AgenticMessage]{
 			Input: &adk.TypedAgentInput[*schema.AgenticMessage]{
 				Messages:        normalizeMessagesForModelInput(history),
@@ -273,9 +273,9 @@ func makePrepareAgent(d Deps) func(context.Context, *adk.TurnLoop[*ChatItem, *sc
 // makeOnAgentEvents 是 TurnLoop 与 HTTP handler 之间的桥。
 //
 // 它把事件迭代器递给 handler，等 handler 消费完，然后负责落库。
-func makeOnAgentEvents(d Deps, sessionID string) func(context.Context, *adk.TurnContext[*ChatItem, *schema.AgenticMessage], *adk.AsyncIterator[*adk.TypedAgentEvent[*schema.AgenticMessage]]) error {
+func makeOnAgentEvents(d Deps, threadID string) func(context.Context, *adk.TurnContext[*ChatItem, *schema.AgenticMessage], *adk.AsyncIterator[*adk.TypedAgentEvent[*schema.AgenticMessage]]) error {
 	return func(ctx context.Context, _ *adk.TurnContext[*ChatItem, *schema.AgenticMessage], evs *adk.AsyncIterator[*adk.TypedAgentEvent[*schema.AgenticMessage]]) error {
-		ts := getTurnState(sessionID)
+		ts := getTurnState(threadID)
 
 		// 在锁内快照通道，避免与正在为抢占重建通道的 handler 竞态。
 		ts.mu.Lock()
@@ -306,11 +306,11 @@ func makeOnAgentEvents(d Deps, sessionID string) func(context.Context, *adk.Turn
 		for _, msg := range result.Intermediates {
 			payload, err := marshalMsg(msg)
 			if err != nil {
-				log.Printf("[onEvents] session=%s 序列化消息失败: %v", sessionID, err)
+				log.Printf("[onEvents] thread=%s 序列化消息失败: %v", threadID, err)
 				continue
 			}
-			if err := d.Repo.AppendMessage(ctx, sessionID, payload); err != nil {
-				log.Printf("[onEvents] session=%s 落库消息失败: %v", sessionID, err)
+			if err := thread.AppendMessage(threadID, d.RunID, payload); err != nil {
+				log.Printf("[onEvents] thread=%s 落库消息失败: %v", threadID, err)
 			}
 		}
 
@@ -318,10 +318,10 @@ func makeOnAgentEvents(d Deps, sessionID string) func(context.Context, *adk.Turn
 	}
 }
 
-// StopSession 立即停掉某个会话正在运行的 TurnLoop。
+// StopThread 立即停掉某个会话正在运行的 TurnLoop。
 // 没有进行中的轮次时返回 false。
-func StopSession(sessionID string) bool {
-	ts := getTurnState(sessionID)
+func StopThread(threadID string) bool {
+	ts := getTurnState(threadID)
 
 	ts.mu.Lock()
 	l := ts.loop
@@ -337,18 +337,18 @@ func StopSession(sessionID string) bool {
 		return false
 	}
 
-	log.Printf("[abort] session=%s 立即停止 loop", sessionID)
+	log.Printf("[abort] thread=%s 立即停止 loop", threadID)
 	l.Stop(adk.WithImmediate())
 	l.Wait()
 	if cancel != nil {
 		cancel()
 	}
-	log.Printf("[abort] session=%s loop 已停止", sessionID)
+	log.Printf("[abort] thread=%s loop 已停止", threadID)
 	return true
 }
 
-// DropSession 停掉 loop 并移除会话的内存状态，供删除会话时调用。
-func DropSession(sessionID string) {
-	StopSession(sessionID)
-	deleteTurnState(sessionID)
+// DropThread 停掉 loop 并移除会话的内存状态，供删除会话时调用。
+func DropThread(threadID string) {
+	StopThread(threadID)
+	deleteTurnState(threadID)
 }

@@ -10,18 +10,18 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/HandsomeNPC/EinoKit/internal/loop"
+	"github.com/HandsomeNPC/EinoKit/internal/memory/thread"
 	"github.com/HandsomeNPC/EinoKit/internal/model/bo"
-	"github.com/HandsomeNPC/EinoKit/internal/repository"
 	"github.com/HandsomeNPC/EinoKit/internal/service/agent"
 )
 
-type SessionApi struct{}
+type ThreadApi struct{}
 
-var SessionApiApp = new(SessionApi)
+var ThreadApiApp = new(ThreadApi)
 
-// CreateSession 创建会话
-func (a *SessionApi) CreateSession(c *gin.Context) {
-	id, err := agent.SessionSvcApp.Create(c.Request.Context())
+// CreateThread 创建会话
+func (a *ThreadApi) CreateThread(c *gin.Context) {
+	id, err := agent.ThreadSvcApp.Create()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -29,9 +29,9 @@ func (a *SessionApi) CreateSession(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"id": id})
 }
 
-// ListSessions 列出全部会话
-func (a *SessionApi) ListSessions(c *gin.Context) {
-	metas, err := agent.SessionSvcApp.List(c.Request.Context())
+// ListThreads 列出全部会话
+func (a *ThreadApi) ListThreads(c *gin.Context) {
+	metas, err := agent.ThreadSvcApp.List()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -39,11 +39,11 @@ func (a *SessionApi) ListSessions(c *gin.Context) {
 	c.JSON(http.StatusOK, metas)
 }
 
-// DeleteSession 删除指定会话
-func (a *SessionApi) DeleteSession(c *gin.Context) {
+// DeleteThread 删除指定会话
+func (a *ThreadApi) DeleteThread(c *gin.Context) {
 	id := c.Param("id")
-	if err := agent.SessionSvcApp.Delete(c.Request.Context(), id); err != nil {
-		if errors.Is(err, repository.ErrSessionNotFound) {
+	if err := agent.ThreadSvcApp.Delete(id); err != nil {
+		if errors.Is(err, thread.ErrThreadNotFound) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "会话不存在"})
 			return
 		}
@@ -54,7 +54,7 @@ func (a *SessionApi) DeleteSession(c *gin.Context) {
 }
 
 // Chat 会话对话，以 AG-UI 事件流（SSE）返回
-func (a *SessionApi) Chat(c *gin.Context) {
+func (a *ThreadApi) Chat(c *gin.Context) {
 	id := c.Param("id")
 
 	var req bo.ChatRequest
@@ -64,7 +64,7 @@ func (a *SessionApi) Chat(c *gin.Context) {
 	}
 
 	// 开流之前先把能用 JSON 拒绝的错误都拒掉：流一旦打开就只能用 RUN_ERROR 报错了。
-	exists, err := agent.SessionSvcApp.Exists(c.Request.Context(), id)
+	exists, err := agent.ThreadSvcApp.Exists(id)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -79,43 +79,46 @@ func (a *SessionApi) Chat(c *gin.Context) {
 		return
 	}
 
-	em := openStream(c, id)
+	runID := events.GenerateRunID()
+	em := openStream(c, id, runID)
 	em.RunStarted()
 
-	result, err := agent.SessionSvcApp.Chat(c, em, id, req.Prompt)
+	result, err := agent.ThreadSvcApp.Chat(c, em, id, runID, req.Prompt)
 	finish(em, result, err)
 }
 
-// Abort 立即终止当前会话的运行。POST /sessions/:id/abort
-func (a *SessionApi) Abort(c *gin.Context) {
-	if agent.SessionSvcApp.Abort(c.Param("id")) {
+// Abort 立即终止当前会话的运行。POST /threads/:id/abort
+func (a *ThreadApi) Abort(c *gin.Context) {
+	if agent.ThreadSvcApp.Abort(c.Param("id")) {
 		c.JSON(http.StatusOK, gin.H{"status": "aborted"})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "no active loop"})
 }
 
-// Render 渲染会话历史。GET /sessions/:id/render
-func (a *SessionApi) Render(c *gin.Context) {
+// Render 渲染会话历史。GET /threads/:id/render
+func (a *ThreadApi) Render(c *gin.Context) {
 	c.JSON(http.StatusNotImplemented, gin.H{"error": "尚未实现"})
 }
 
-// Upload 上传文档到会话工作区。POST /sessions/:id/docs
-func (a *SessionApi) Upload(c *gin.Context) {
+// Upload 上传文档到会话工作区。POST /threads/:id/docs
+func (a *ThreadApi) Upload(c *gin.Context) {
 	c.JSON(http.StatusNotImplemented, gin.H{"error": "尚未实现"})
 }
 
 // openStream 发出 SSE 响应头并构造 emitter。
 //
 // threadID 用会话 ID：AG-UI 的 thread 概念与本项目的会话一一对应。
-func openStream(c *gin.Context, sessionID string) *agui.Emitter {
+// runID 由调用方经 events.GenerateRunID() 生成，标识本轮 run，会一路透传到
+// thread_message.run_id。
+func openStream(c *gin.Context, threadID, runID string) *agui.Emitter {
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no") // nginx 反代下禁用缓冲
 	c.Writer.Flush()                    // 立刻把 200 + 头部刷出去
 
-	return agui.NewEmitter(c, sessionID, events.GenerateRunID())
+	return agui.NewEmitter(c, threadID, runID)
 }
 
 // finish 根据本轮结果发出终态事件。

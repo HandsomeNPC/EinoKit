@@ -1,7 +1,6 @@
 package loop
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -9,7 +8,7 @@ import (
 
 	"github.com/cloudwego/eino/schema"
 
-	"github.com/HandsomeNPC/EinoKit/internal/repository"
+	"github.com/HandsomeNPC/EinoKit/internal/memory/thread"
 )
 
 // Responses / Ark API 在回放历史时要求 item 的状态与 ID 完整，
@@ -22,7 +21,7 @@ const (
 
 // marshalMsg 把一条消息序列化成入库用的 JSON。
 func marshalMsg(m *schema.AgenticMessage) (string, error) {
-	data, err := json.Marshal(normalizeForSession(m))
+	data, err := json.Marshal(normalizeForThread(m))
 	if err != nil {
 		return "", fmt.Errorf("loop: 序列化消息失败: %w", err)
 	}
@@ -35,13 +34,13 @@ func unmarshalMsg(payload []byte) (*schema.AgenticMessage, error) {
 	if err := json.Unmarshal(payload, &msg); err != nil {
 		return nil, fmt.Errorf("loop: 反序列化消息失败: %w", err)
 	}
-	return normalizeForSession(&msg), nil
+	return normalizeForThread(&msg), nil
 }
 
 // loadHistory 按追加顺序读出会话全部消息。
 // 单行解析失败只记日志跳过——一条坏数据不该让整个会话打不开。
-func loadHistory(ctx context.Context, repo *repository.SessionRepository, sessionID string) ([]*schema.AgenticMessage, error) {
-	rows, err := repo.SelectMessages(ctx, sessionID)
+func loadHistory(threadID string) ([]*schema.AgenticMessage, error) {
+	rows, err := thread.SelectMessages(threadID)
 	if err != nil {
 		return nil, err
 	}
@@ -49,7 +48,7 @@ func loadHistory(ctx context.Context, repo *repository.SessionRepository, sessio
 	for _, row := range rows {
 		msg, err := unmarshalMsg(row.Payload)
 		if err != nil {
-			log.Printf("[loop] 跳过损坏的消息 session=%s id=%d: %v", sessionID, row.ID, err)
+			log.Printf("[loop] 跳过损坏的消息 thread=%s id=%d: %v", threadID, row.ID, err)
 			continue
 		}
 		out = append(out, msg)
@@ -57,12 +56,12 @@ func loadHistory(ctx context.Context, repo *repository.SessionRepository, sessio
 	return out, nil
 }
 
-// normalizeForSession 返回一条"可安全入库、也可安全回放给模型"的消息。
+// normalizeForThread 返回一条"可安全入库、也可安全回放给模型"的消息。
 //
 // agentic 模型实现会把 Responses API 的 item ID 挂在 content block 上，回放
 // assistant 消息 / reasoning 块 / 工具调用时**必须**带上这些 ID，否则 API 会拒绝；
 // 同时流式专用的 StreamingMeta 必须剥掉。所以写入和读取两侧都要过这一道。
-func normalizeForSession(msg *schema.AgenticMessage) *schema.AgenticMessage {
+func normalizeForThread(msg *schema.AgenticMessage) *schema.AgenticMessage {
 	if msg == nil {
 		return nil
 	}
@@ -81,11 +80,11 @@ func normalizeForSession(msg *schema.AgenticMessage) *schema.AgenticMessage {
 }
 
 // normalizeMessagesForModelInput 在把历史喂回模型前做一遍归一化。
-// 当前与 normalizeForSession 等价；留出这层边界，便于日后区分入库格式与模型入参规则。
+// 当前与 normalizeForThread 等价；留出这层边界，便于日后区分入库格式与模型入参规则。
 func normalizeMessagesForModelInput(msgs []*schema.AgenticMessage) []*schema.AgenticMessage {
 	out := make([]*schema.AgenticMessage, 0, len(msgs))
 	for _, m := range msgs {
-		out = append(out, normalizeForSession(m))
+		out = append(out, normalizeForThread(m))
 	}
 	return out
 }

@@ -25,13 +25,13 @@ func RegisterRoutes(r *gin.Engine) {
 	r.GET("/health", handler.HealthApiApp.Health)
 
 	// 会话管理
-	r.POST("/sessions", handler.SessionApiApp.CreateSession)
-	r.GET("/sessions", handler.SessionApiApp.ListSessions)
-	r.DELETE("/sessions/:id", handler.SessionApiApp.DeleteSession)
+	r.POST("/threads", handler.ThreadApiApp.CreateThread)
+	r.GET("/threads", handler.ThreadApiApp.ListThreads)
+	r.DELETE("/threads/:id", handler.ThreadApiApp.DeleteThread)
 
 	// 会话交互
-	r.POST("/sessions/:id/chat", handler.SessionApiApp.Chat)
-	r.GET("/sessions/:id/render", handler.SessionApiApp.Render)
-	r.POST("/sessions/:id/abort", handler.SessionApiApp.Abort)
-	r.POST("/sessions/:id/docs", handler.SessionApiApp.Upload)
+	r.POST("/threads/:id/chat", handler.ThreadApiApp.Chat)
+	r.GET("/threads/:id/render", handler.ThreadApiApp.Render)
+	r.POST("/threads/:id/abort", handler.ThreadApiApp.Abort)
+	r.POST("/threads/:id/docs", handler.ThreadApiApp.Upload)
 }
