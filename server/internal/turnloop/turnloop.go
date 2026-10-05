@@ -2,8 +2,8 @@ package turnloop
 
 import (
 	"context"
-	"errors"
 
+	"github.com/ag-ui-protocol/ag-ui/sdks/community/go/pkg/core/events"
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/schema"
 
@@ -14,30 +14,22 @@ import (
 
 // *schema.AgenticMessage 是本包固定的消息类型，即 EinoKit 全局使用的 agentic 消息。
 
-// NewTurnLoop 装配一个 TurnLoop。threadID 同时作为 checkpoint key，
+// NewTurnLoop 装配一个 TurnLoop。threadID 同时作为 checkpoint key,
+// runID 标识本次请求(一次 HTTP /chat = 一个 run),由本函数用
+// events.GenerateRunID() 生成,GenInput / OnAgentEvents 共用同一个
+// runID,把本轮消息归到同一行 payload。
 func NewTurnLoop(threadID string) *adk.TurnLoop[*ChatItem, *schema.AgenticMessage] {
+	runID := events.GenerateRunID()
 	cfg := adk.TurnLoopConfig[*ChatItem, *schema.AgenticMessage]{
-		GenInput:      makeGenInput(threadID),     //每轮开始时调用，决定"这一轮 Agent 看到什么"
-		PrepareAgent:  makePrepareAgent(threadID), //每轮调用一次，返回本轮使用的 Agent
-		OnAgentEvents: makeOnAgentEvents(),        //接收Agent的事件流，负责渲染输出和持久化中间消息
+		GenInput:      makeGenInput(threadID, runID), //每轮开始时调用，决定"这一轮 Agent 看到什么"
+		PrepareAgent:  makePrepareAgent(threadID),    //每轮调用一次，返回本轮使用的 Agent
+		OnAgentEvents: makeOnAgentEvents(),           //接收Agent的事件流，负责渲染输出和持久化中间消息
 		//以下三个字段用于声明式 checkpoint（审批恢复）
 		GenResume:    makeGenResume(),
 		Store:        checkpoint.GetInstance(),
 		CheckpointID: threadID,
 	}
 	return adk.NewTurnLoop(cfg)
-}
-
-// GenInput：每轮开始时调用，决定"这一轮 Agent 看到什么"
-// 从队列中选择 items 构建 Agent 输入，返回 Consumed（本轮处理）和 Remaining（留到后续轮次）
-func makeGenInput(threadID string) func(ctx context.Context, loop *adk.TurnLoop[*ChatItem, *schema.AgenticMessage], items []*ChatItem) (*adk.GenInputResult[*ChatItem, *schema.AgenticMessage], error) {
-	return func(ctx context.Context, loop *adk.TurnLoop[*ChatItem, *schema.AgenticMessage], items []*ChatItem) (*adk.GenInputResult[*ChatItem, *schema.AgenticMessage], error) {
-		// TODO: 从 items 选 queryItem，持久化用户消息，构建 runMessages，
-		//  返回 Input/Consumed/Remaining。无 query 时 loop.Stop(WithStopCause("no query items"))。
-		_ = threadID
-		_ = items
-		return nil, errors.New("genInput: 未实现")
-	}
 }
 
 // PrepareAgent：每轮调用一次，返回本轮使用的 Agent
@@ -54,25 +46,4 @@ func makePrepareAgent(threadID string) func(ctx context.Context, loop *adk.TurnL
 	}
 }
 
-// OnAgentEvents：接收 Agent 的事件流，负责渲染输出和持久化中间消息
-// 本示例通过 channel 把事件流转交给 HTTP handler 做 SSE 输出
-func makeOnAgentEvents() func(ctx context.Context, tc *adk.TurnContext[*ChatItem, *schema.AgenticMessage], events *adk.AsyncIterator[*adk.TypedAgentEvent[*schema.AgenticMessage]]) error {
-	return func(ctx context.Context, tc *adk.TurnContext[*ChatItem, *schema.AgenticMessage], events *adk.AsyncIterator[*adk.TypedAgentEvent[*schema.AgenticMessage]]) error {
-		// TODO: 调用注入的 stream 消费 events，持久化中间消息，
-		//  触发 interrupt 时写回 pending interrupt 与 msgIdx，返回 result.Err。
-		_ = events
-		return errors.New("onAgentEvents: 未实现")
-	}
-}
-
-// GenResume 的职责就是从新 Push 进来的 items 中提取审批结果，构建 ResumeParams：
-func makeGenResume() func(ctx context.Context, loop *adk.TurnLoop[*ChatItem, *schema.AgenticMessage], interruptedItems, unhandledItems, newItems []*ChatItem) (*adk.GenResumeResult[*ChatItem, *schema.AgenticMessage], error) {
-	return func(ctx context.Context, loop *adk.TurnLoop[*ChatItem, *schema.AgenticMessage], interruptedItems, unhandledItems, newItems []*ChatItem) (*adk.GenResumeResult[*ChatItem, *schema.AgenticMessage], error) {
-		// TODO: 在 newItems 中找 InterruptContent != nil 的条目，
-		//  从 pending interrupt 取 ID，组装 ResumeParams.Targets。
-		_ = interruptedItems
-		_ = unhandledItems
-		_ = newItems
-		return nil, errors.New("genResume: 未实现")
-	}
-}
+// OnAgentEvents 与 GenResume 见 on_agent_events.go、gen_resume.go。

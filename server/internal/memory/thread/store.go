@@ -2,10 +2,12 @@ package thread
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/HandsomeNPC/EinoKit/internal/database"
 )
@@ -76,25 +78,75 @@ func DeleteByID(id string) error {
 	return err
 }
 
-// AppendMessage 追加一条消息到会话，对标 mem.Session.Append。
-// threadID 标识所属会话，runID 标识产生该消息的那一轮对话（AG-UI run 概念）。
-// payload 为已序列化的消息 JSON；调用方负责 marshal，本包不感知消息泛型类型。
+// AppendMessage 把一条消息追加到指定 (threadID, runID) 的 payload 中。
+// payload 表示一轮对话(run)中全部消息的 JSON 数组:
+//   - 若 (threadID, runID) 行不存在,新建一行,payload = [payload];
+//   - 若已存在,把 payload 作为新元素追加到现有数组末尾。
+//
+// payload 参数为已序列化的单条消息 JSON;调用方负责 marshal,
+// 本包不感知消息泛型类型。整个读-改-写在单事务内完成并加行锁,
+// 保证同一 (threadID, runID) 的并发追加不会丢消息。
 func AppendMessage(threadID, runID, payload string) error {
 	if threadID == "" {
 		return fmt.Errorf("thread: 会话主键为空")
+	}
+	if runID == "" {
+		return fmt.Errorf("thread: runID 为空")
 	}
 	if payload == "" {
 		return fmt.Errorf("thread: 消息内容为空")
 	}
 
-	m := &ThreadMessage{ThreadID: threadID, RunID: runID, Payload: []byte(payload)}
-	if err := database.GetInstance().WithContext(context.Background()).Create(m).Error; err != nil {
-		return fmt.Errorf("thread: 追加会话消息 id=%s 失败: %w", threadID, err)
+	err := database.GetInstance().WithContext(context.Background()).Transaction(func(tx *gorm.DB) error {
+		// SELECT ... FOR UPDATE 锁住同一 (thread_id, run_id) 行,
+		// 使并发追加串行化;行不存在时返回 ErrRecordNotFound。
+		var existing ThreadMessage
+		findErr := tx.Where("thread_id = ? AND run_id = ?", threadID, runID).
+			Clauses(clause.Locking{Strength: "UPDATE"}).
+			First(&existing).Error
+
+		switch {
+		case findErr == nil:
+			// 行已存在 —— 解析现有数组,追加新消息,写回。
+			var msgs []json.RawMessage
+			if len(existing.Payload) > 0 {
+				if uErr := json.Unmarshal(existing.Payload, &msgs); uErr != nil {
+					return fmt.Errorf("thread: 解析 payload 失败 id=%s run=%s: %w", threadID, runID, uErr)
+				}
+			}
+			msgs = append(msgs, json.RawMessage(payload))
+			newPayload, mErr := json.Marshal(msgs)
+			if mErr != nil {
+				return fmt.Errorf("thread: 序列化 payload 失败 id=%s run=%s: %w", threadID, runID, mErr)
+			}
+			return tx.Model(&ThreadMessage{}).
+				Where("id = ?", existing.ID).
+				Update("payload", newPayload).Error
+
+		case errors.Is(findErr, gorm.ErrRecordNotFound):
+			// 行不存在 —— 新建,首条消息即为数组唯一元素。
+			arr, mErr := json.Marshal([]json.RawMessage{json.RawMessage(payload)})
+			if mErr != nil {
+				return fmt.Errorf("thread: 序列化 payload 失败 id=%s run=%s: %w", threadID, runID, mErr)
+			}
+			return tx.Create(&ThreadMessage{
+				ThreadID: threadID,
+				RunID:    runID,
+				Payload:  arr,
+			}).Error
+
+		default:
+			return fmt.Errorf("thread: 查询消息 id=%s run=%s 失败: %w", threadID, runID, findErr)
+		}
+	})
+	if err != nil {
+		return fmt.Errorf("thread: 追加会话消息 id=%s run=%s 失败: %w", threadID, runID, err)
 	}
 	return nil
 }
 
-// SelectMessages 按追加顺序取出会话全部消息，对标 mem.Session.GetMessages。
+// SelectMessages 按 run 追加顺序取出会话全部消息行,对标 mem.Session.GetMessages。
+// 每行的 Payload 是该 run 内全部消息的 JSON 数组,调用方需按数组解码再展开。
 // 会话不存在时返回空切片与 nil，由调用方按需比对。
 func SelectMessages(threadID string) ([]*ThreadMessage, error) {
 	if threadID == "" {
