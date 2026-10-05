@@ -9,6 +9,8 @@ import (
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
+
+	"github.com/HandsomeNPC/EinoKit/internal/chatmodel"
 )
 
 // instruction 是 Agent 的系统提示词。
@@ -39,7 +41,7 @@ func Default(ctx context.Context) (adk.TypedAgent[*schema.AgenticMessage], error
 // 用 ChatModelAgent 而非 deep agent：后者会拖进 LocalBackend（文件系统 + shell，
 // shell 在 Windows 上不可用）、planner 与子 agent，买奶茶一个都不需要。
 func build(ctx context.Context) (adk.TypedAgent[*schema.AgenticMessage], error) {
-	cm, err := newAgenticModel(ctx)
+	cm, err := chatmodel.NewAgenticModel(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("agent: 初始化模型失败: %w", err)
 	}

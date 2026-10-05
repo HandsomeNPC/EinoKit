@@ -4,8 +4,6 @@ package redis
 import (
 	"context"
 	"fmt"
-	"log"
-	"sync"
 	"time"
 
 	goredis "github.com/redis/go-redis/v9"
@@ -56,60 +54,4 @@ func Close(client *goredis.Client) error {
 		return nil
 	}
 	return client.Close()
-}
-
-// 包级默认实例。
-var (
-	mu            sync.RWMutex
-	defaultClient *goredis.Client
-)
-
-// Init 建立连接并设置为包级默认实例。
-func Init() {
-	c := config.Get()
-	cfg := c.Redis
-	client, err := New(cfg)
-	if err != nil {
-		panic(fmt.Errorf("redis: 初始化失败: %w", err))
-	}
-	mu.Lock()
-	defaultClient = client
-	mu.Unlock()
-	log.Printf("[%s] Redis 已连接 %s db=%d", c.Server.Name, cfg.Addr(), cfg.DB)
-}
-
-// Client 返回包级默认实例，未调用 Init 会 panic。
-func Client() *goredis.Client {
-	mu.RLock()
-	client := defaultClient
-	mu.RUnlock()
-	if client == nil {
-		panic("redis: 尚未初始化，请先调用 redis.Init")
-	}
-	return client
-}
-
-// SetClient 设置包级默认实例并返回恢复原值的函数，供集成测试注入测试专用连接
-// （业务代码用 Client()，不该调本函数；生产路径一律走 Init）。
-func SetClient(client *goredis.Client) (restore func()) {
-	mu.Lock()
-	prev := defaultClient
-	defaultClient = client
-	mu.Unlock()
-	return func() {
-		mu.Lock()
-		defaultClient = prev
-		mu.Unlock()
-	}
-}
-
-// CloseDefault 关闭并清空包级默认实例，供进程退出时 defer 调用。
-func CloseDefault() {
-	mu.Lock()
-	client := defaultClient
-	defaultClient = nil
-	mu.Unlock()
-	if err := Close(client); err != nil {
-		log.Printf("关闭 Redis 连接失败: %v", err)
-	}
 }

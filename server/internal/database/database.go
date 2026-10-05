@@ -4,8 +4,6 @@ package database
 import (
 	"context"
 	"fmt"
-	"log"
-	"sync"
 
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -84,60 +82,4 @@ func Close(db *gorm.DB) error {
 		return fmt.Errorf("database: 获取底层连接池失败: %w", err)
 	}
 	return sqlDB.Close()
-}
-
-// 包级默认实例。
-var (
-	mu        sync.RWMutex
-	defaultDB *gorm.DB
-)
-
-// Init 建立连接并设置为包级默认实例。
-func Init() {
-	c := config.Get()
-	cfg := c.Datasource
-	db, err := New(cfg)
-	if err != nil {
-		panic(fmt.Errorf("database: 初始化失败: %w", err))
-	}
-	mu.Lock()
-	defaultDB = db
-	mu.Unlock()
-	log.Printf("[%s] 数据库已连接 %s:%d/%s",
-		c.Server.Name, cfg.Host, cfg.Port, cfg.DBName)
-}
-
-// DB 返回包级默认实例，未调用 Init 会 panic。
-func DB() *gorm.DB {
-	mu.RLock()
-	db := defaultDB
-	mu.RUnlock()
-	if db == nil {
-		panic("database: 尚未初始化，请先调用 database.Init")
-	}
-	return db
-}
-
-// SetDB 设置包级默认实例并返回恢复原值的函数，供测试注入专用连接。
-func SetDB(db *gorm.DB) (restore func()) {
-	mu.Lock()
-	prev := defaultDB
-	defaultDB = db
-	mu.Unlock()
-	return func() {
-		mu.Lock()
-		defaultDB = prev
-		mu.Unlock()
-	}
-}
-
-// CloseDefault 关闭并清空包级默认实例，供进程退出时 defer 调用。
-func CloseDefault() {
-	mu.Lock()
-	db := defaultDB
-	defaultDB = nil
-	mu.Unlock()
-	if err := Close(db); err != nil {
-		log.Printf("关闭数据库连接失败: %v", err)
-	}
 }

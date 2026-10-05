@@ -5,10 +5,10 @@ import (
 	"errors"
 
 	agui "github.com/HandsomeNPC/agui-go-sdk"
+	"github.com/cloudwego/eino/compose"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
-	"github.com/HandsomeNPC/EinoKit/internal/checkpoint"
 	"github.com/HandsomeNPC/EinoKit/internal/database"
 	"github.com/HandsomeNPC/EinoKit/internal/loop"
 	"github.com/HandsomeNPC/EinoKit/internal/model"
@@ -18,10 +18,19 @@ import (
 // messageKindAgentic 本项目消息表示固定为 agentic（见 loop 包文档与 schema.AgenticMessage）。
 const messageKindAgentic = "agentic"
 
-type SessionService struct{}
+// SessionService 负责会话的创建、查询与一轮聊天的编排。
+// store 由外部注入（main 启动时通过 NewSessionService 传入），便于测试替换。
+type SessionService struct {
+	store compose.CheckPointStore
+}
 
-// SessionSvcApp 包级单例，供 handler 引用。
-var SessionSvcApp = new(SessionService)
+// NewSessionService 构造一个注入了 checkpoint store 的 SessionService。
+func NewSessionService(store compose.CheckPointStore) *SessionService {
+	return &SessionService{store: store}
+}
+
+// SessionSvcApp 包级单例，供 handler 引用；由 main 在 redis.Init 之后赋值。
+var SessionSvcApp *SessionService
 
 // Create 创建一个新会话，返回新生成的会话 ID。
 func (s *SessionService) Create(ctx context.Context) (string, error) {
@@ -86,11 +95,11 @@ func (s *SessionService) deps(ctx context.Context) (loop.Deps, error) {
 	}
 	return loop.Deps{
 		Agent: a,
-		Store: checkpoint.Default(),
+		Store: s.store,
 		Repo:  s.repo(),
 	}, nil
 }
 
 func (s *SessionService) repo() *repository.SessionRepository {
-	return repository.NewSessionRepository(database.DB())
+	return repository.NewSessionRepository(database.GetInstance())
 }
