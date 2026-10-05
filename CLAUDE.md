@@ -35,7 +35,7 @@ go test ./...
 
 ## 技术栈基线
 
-- **后端**:Go + Eino (`github.com/cloudwego/eino` 含 `/adk` 子包) + AG-UI SDK。AG-UI Go SDK 用 go.mod `replace` 指向本地 `E:/WorkSpace/ag-ui-main/sdks/community/go`(本地开发期,提交前确认是否还需 replace)。Store:PostgreSQL 生产 / SQLite 本地降级。
+- **后端**:Go + Eino (`github.com/cloudwego/eino` 含 `/adk` 子包) + AG-UI SDK。AG-UI Go SDK 用 go.mod `replace` 指向本地 `E:/WorkSpace/ag-ui-main/sdks/community/go`(本地开发期,提交前确认是否还需 replace)。Store:PostgreSQL 生产 / 本地原型用 JSONL 文件(`internal/msgops` + `mem` 包)。
 - **前端**:Vue 3 `<script setup>` + TypeScript + Vite + TDesign Vue Next (`tdesign-vue-next`)。AG-UI 客户端走 ChatEngine + AGUIAdapter。
 - **模型**:按 Claude Code 环境提示,构建 AI 应用默认用最新最强 Claude 模型(Opus/Sonnet/Haiku)。后端 Eino 的 Model 调用按业务自选 provider,不在脚手架强绑定。
 
