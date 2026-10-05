@@ -1,8 +1,9 @@
-package agent
+package tools
 
 import (
 	"context"
 	"fmt"
+	"log"
 
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/components/tool/utils"
@@ -34,11 +35,9 @@ type orderMilkTeaResult struct {
 // unitPriceCents 单杯价格（分）。订单落库是后续里程碑，这里先用固定价。
 const unitPriceCents = 1800
 
-// newOrderMilkTeaTool 构造下单工具。
-//
-// 本轮是桩实现：只生成订单号与金额，不落库。
-func newOrderMilkTeaTool() (tool.InvokableTool, error) {
-	return utils.InferTool(ToolNameOrderMilkTea, "下单购买奶茶。",
+// NewOrderMilkTeaTool 构造下单工具。
+func NewOrderMilkTeaTool() tool.InvokableTool {
+	t, err := utils.InferTool(ToolNameOrderMilkTea, "下单购买奶茶。",
 		func(ctx context.Context, args *orderMilkTeaArgs) (*orderMilkTeaResult, error) {
 			if args == nil {
 				return nil, fmt.Errorf("下单参数为空")
@@ -57,4 +56,9 @@ func newOrderMilkTeaTool() (tool.InvokableTool, error) {
 				ETA:     "15 分钟",
 			}, nil
 		})
+	if err != nil {
+		log.Printf("[tools] 构建 %s 工具失败: %v", ToolNameOrderMilkTea, err)
+		return nil
+	}
+	return t
 }

@@ -2,6 +2,7 @@ package chatmodel
 
 import (
 	"context"
+	"log"
 
 	"github.com/cloudwego/eino-ext/components/model/agenticopenai"
 	einomodel "github.com/cloudwego/eino/components/model"
@@ -11,10 +12,10 @@ import (
 )
 
 // NewAgenticModel 按配置构造 agentic 模型（Responses API）。
-func NewAgenticModel(ctx context.Context) (einomodel.AgenticModel, error) {
+func NewAgenticModel(ctx context.Context) einomodel.AgenticModel {
 	cfg := config.Get().ChatModel
 	timeout := cfg.Timeout()
-	return agenticopenai.NewResponsesModel(ctx, &agenticopenai.ResponsesConfig{
+	m, err := agenticopenai.NewResponsesModel(ctx, &agenticopenai.ResponsesConfig{
 		APIKey:  cfg.APIKey,
 		Model:   cfg.Model,
 		BaseURL: cfg.BaseURL,
@@ -27,4 +28,9 @@ func NewAgenticModel(ctx context.Context) (einomodel.AgenticModel, error) {
 			Effort: responses.ReasoningEffortMax,
 		},
 	})
+	if err != nil {
+		log.Printf("[chatmodel] 初始化 agentic 模型失败: %v", err)
+		return nil
+	}
+	return m
 }
