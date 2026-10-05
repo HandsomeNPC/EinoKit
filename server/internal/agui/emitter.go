@@ -34,6 +34,9 @@ func (e *Emitter) write(ev events.Event) {
 	}
 	if err := e.sse.WriteEvent(e.ctx, e.ctx.Writer, ev); err != nil {
 		if isTransportError(err) {
+			if e.err == nil {
+				e.err = err
+			}
 			return
 		}
 		if e.encErr == nil {
@@ -115,6 +118,13 @@ func (e *Emitter) ToolStart(toolCallName string) string {
 	toolCallID := events.GenerateToolCallID()
 	e.write(events.NewToolCallStartEvent(toolCallID, toolCallName))
 	return toolCallID
+}
+
+// ToolStartWithID 用指定的 toolCallID 发 TOOL_CALL_START,使后续 TOOL_CALL_ARGS/
+// TOOL_CALL_END/TOOL_CALL_RESULT 能与模型侧的 tool call ID 对齐(否则结果事件无法
+// 关联回起始事件)。流式 tool call 用这个;非流式且不关心与模型 ID 对齐时用 ToolStart。
+func (e *Emitter) ToolStartWithID(toolCallID, toolCallName string) {
+	e.write(events.NewToolCallStartEvent(toolCallID, toolCallName))
 }
 
 func (e *Emitter) ToolStartWithParentMessageID(toolCallName string, parentMessageID string) string {

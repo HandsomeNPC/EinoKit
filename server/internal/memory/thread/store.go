@@ -87,14 +87,29 @@ func DeleteByID(id string) error {
 // 本包不感知消息泛型类型。整个读-改-写在单事务内完成并加行锁,
 // 保证同一 (threadID, runID) 的并发追加不会丢消息。
 func AppendMessage(threadID, runID, payload string) error {
+	return AppendMessages(threadID, runID, []string{payload})
+}
+
+// AppendMessages 把一批消息一次性追加到指定 (threadID, runID) 的 payload 中。
+// 整批在单事务内完成:读行一次、追加全部、写回一次,把 N 条消息的落库
+// 从 N 次事务(N 次 SELECT FOR UPDATE + N 次重写整个数组)压到 1 次。
+// 适用于 OnAgentEvents 在一轮里累积多条中间消息后统一 flush。
+//
+// payloads 元素为已序列化的单条消息 JSON;空切片直接返回 nil。
+func AppendMessages(threadID, runID string, payloads []string) error {
 	if threadID == "" {
 		return fmt.Errorf("thread: 会话主键为空")
 	}
 	if runID == "" {
 		return fmt.Errorf("thread: runID 为空")
 	}
-	if payload == "" {
-		return fmt.Errorf("thread: 消息内容为空")
+	if len(payloads) == 0 {
+		return nil
+	}
+	for i, p := range payloads {
+		if p == "" {
+			return fmt.Errorf("thread: 第 %d 条消息内容为空", i)
+		}
 	}
 
 	err := database.GetInstance().WithContext(context.Background()).Transaction(func(tx *gorm.DB) error {
@@ -107,14 +122,16 @@ func AppendMessage(threadID, runID, payload string) error {
 
 		switch {
 		case findErr == nil:
-			// 行已存在 —— 解析现有数组,追加新消息,写回。
+			// 行已存在 —— 解析现有数组,追加整批新消息,写回一次。
 			var msgs []json.RawMessage
 			if len(existing.Payload) > 0 {
 				if uErr := json.Unmarshal(existing.Payload, &msgs); uErr != nil {
 					return fmt.Errorf("thread: 解析 payload 失败 id=%s run=%s: %w", threadID, runID, uErr)
 				}
 			}
-			msgs = append(msgs, json.RawMessage(payload))
+			for _, p := range payloads {
+				msgs = append(msgs, json.RawMessage(p))
+			}
 			newPayload, mErr := json.Marshal(msgs)
 			if mErr != nil {
 				return fmt.Errorf("thread: 序列化 payload 失败 id=%s run=%s: %w", threadID, runID, mErr)
@@ -124,15 +141,19 @@ func AppendMessage(threadID, runID, payload string) error {
 				Update("payload", newPayload).Error
 
 		case errors.Is(findErr, gorm.ErrRecordNotFound):
-			// 行不存在 —— 新建,首条消息即为数组唯一元素。
-			arr, mErr := json.Marshal([]json.RawMessage{json.RawMessage(payload)})
+			// 行不存在 —— 新建,整批消息作为数组初始元素。
+			arr := make([]json.RawMessage, 0, len(payloads))
+			for _, p := range payloads {
+				arr = append(arr, json.RawMessage(p))
+			}
+			data, mErr := json.Marshal(arr)
 			if mErr != nil {
 				return fmt.Errorf("thread: 序列化 payload 失败 id=%s run=%s: %w", threadID, runID, mErr)
 			}
 			return tx.Create(&ThreadMessage{
 				ThreadID: threadID,
 				RunID:    runID,
-				Payload:  arr,
+				Payload:  data,
 			}).Error
 
 		default:
@@ -140,7 +161,7 @@ func AppendMessage(threadID, runID, payload string) error {
 		}
 	})
 	if err != nil {
-		return fmt.Errorf("thread: 追加会话消息 id=%s run=%s 失败: %w", threadID, runID, err)
+		return fmt.Errorf("thread: 批量追加会话消息 id=%s run=%s 失败: %w", threadID, runID, err)
 	}
 	return nil
 }
