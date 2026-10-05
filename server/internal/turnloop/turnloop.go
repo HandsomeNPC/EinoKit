@@ -4,46 +4,53 @@ import (
 	"context"
 	"errors"
 
-	"github.com/HandsomeNPC/EinoKit/internal/checkpoint"
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/schema"
+
+	"github.com/HandsomeNPC/EinoKit/internal/agents"
+	"github.com/HandsomeNPC/EinoKit/internal/checkpoint"
+	"github.com/HandsomeNPC/EinoKit/internal/memory/thread"
 )
 
 // *schema.AgenticMessage 是本包固定的消息类型，即 EinoKit 全局使用的 agentic 消息。
 
-// NewTurnLoop 装配一个 TurnLoop。sessionID 同时作为 checkpoint key，
-func NewTurnLoop(sessionID string) *adk.TurnLoop[*ChatItem, *schema.AgenticMessage] {
+// NewTurnLoop 装配一个 TurnLoop。threadID 同时作为 checkpoint key，
+func NewTurnLoop(threadID string) *adk.TurnLoop[*ChatItem, *schema.AgenticMessage] {
 	cfg := adk.TurnLoopConfig[*ChatItem, *schema.AgenticMessage]{
-		GenInput:      makeGenInput(sessionID), //每轮开始时调用，决定"这一轮 Agent 看到什么"
-		PrepareAgent:  makePrepareAgent(),      //每轮调用一次，返回本轮使用的 Agent
-		OnAgentEvents: makeOnAgentEvents(),     //接收Agent的事件流，负责渲染输出和持久化中间消息
+		GenInput:      makeGenInput(threadID),     //每轮开始时调用，决定"这一轮 Agent 看到什么"
+		PrepareAgent:  makePrepareAgent(threadID), //每轮调用一次，返回本轮使用的 Agent
+		OnAgentEvents: makeOnAgentEvents(),        //接收Agent的事件流，负责渲染输出和持久化中间消息
 		//以下三个字段用于声明式 checkpoint（审批恢复）
 		GenResume:    makeGenResume(),
 		Store:        checkpoint.GetInstance(),
-		CheckpointID: sessionID,
+		CheckpointID: threadID,
 	}
 	return adk.NewTurnLoop(cfg)
 }
 
 // GenInput：每轮开始时调用，决定"这一轮 Agent 看到什么"
 // 从队列中选择 items 构建 Agent 输入，返回 Consumed（本轮处理）和 Remaining（留到后续轮次）
-func makeGenInput(sessionID string) func(ctx context.Context, loop *adk.TurnLoop[*ChatItem, *schema.AgenticMessage], items []*ChatItem) (*adk.GenInputResult[*ChatItem, *schema.AgenticMessage], error) {
+func makeGenInput(threadID string) func(ctx context.Context, loop *adk.TurnLoop[*ChatItem, *schema.AgenticMessage], items []*ChatItem) (*adk.GenInputResult[*ChatItem, *schema.AgenticMessage], error) {
 	return func(ctx context.Context, loop *adk.TurnLoop[*ChatItem, *schema.AgenticMessage], items []*ChatItem) (*adk.GenInputResult[*ChatItem, *schema.AgenticMessage], error) {
 		// TODO: 从 items 选 queryItem，持久化用户消息，构建 runMessages，
 		//  返回 Input/Consumed/Remaining。无 query 时 loop.Stop(WithStopCause("no query items"))。
-		_ = sessionID
+		_ = threadID
 		_ = items
 		return nil, errors.New("genInput: 未实现")
 	}
 }
 
 // PrepareAgent：每轮调用一次，返回本轮使用的 Agent
-// 本示例直接返回同一个 Agent，但你可以根据 items 动态选择不同 Agent
-func makePrepareAgent() func(ctx context.Context, loop *adk.TurnLoop[*ChatItem, *schema.AgenticMessage], consumed []*ChatItem) (adk.TypedAgent[*schema.AgenticMessage], error) {
+// 根据 threadID 查 ThreadInfo 拿到 AgentType，再从 registry 取对应 Agent。
+func makePrepareAgent(threadID string) func(ctx context.Context, loop *adk.TurnLoop[*ChatItem, *schema.AgenticMessage], consumed []*ChatItem) (adk.TypedAgent[*schema.AgenticMessage], error) {
 	return func(ctx context.Context, loop *adk.TurnLoop[*ChatItem, *schema.AgenticMessage], consumed []*ChatItem) (adk.TypedAgent[*schema.AgenticMessage], error) {
-		// TODO: 返回注入的 Agent。
 		_ = consumed
-		return nil, errors.New("prepareAgent: 未实现")
+
+		info, err := thread.SelectByID(threadID)
+		if err != nil {
+			return nil, err
+		}
+		return agents.GetAgent(info.AgentType)
 	}
 }
 
