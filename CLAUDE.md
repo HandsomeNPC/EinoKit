@@ -82,6 +82,29 @@ resume),`thread_info.pending_interrupt` 只是展示/回填用的副本。
 
 新增需要审批的工具时,只需注册一个渲染组件,前后端的中断传递链路都不用改。
 
+### 对话执行模型(常驻 loop + 抢占)
+
+每个会话对应一个**常驻** `adk.TurnLoop`,跨多次 HTTP 请求存活(见
+`turnloop/session.go`),而不是旧的"一请求一 loop"。这让框架原生的抢占
+能力真正可用:
+
+- 新消息到达时,`Submit` 用 `Push(WithPreemptTimeout(AnySafePoint, ...))`
+  在安全点(模型返回后 / 工具调用全部结束后)取消当前轮,开新一轮——
+  新一轮的 `GenInput` 能看到包括新条目在内的全部缓冲条目,上文不丢。
+  这替代了旧实现对并发请求简单回 409 的做法。
+- 待审批时用户直接输入新消息,`buildChatItems` 先替用户表达"取消"
+  (压一个 `InterruptContent=false` 的恢复条目),再压提问条目。工具会
+  拿到"用户取消了本次下单"的结果,历史完整,新 prompt 正常执行——
+  不再卡在"请先批准或取消后再提问"。
+- loop 并非永生:业务中断(等待审批)和错误都会让它退出以落快照,空闲
+  超时(`UntilIdleFor`)也会回收;loop 不在时下次请求新建,若存在
+  checkpoint 自动走 resume。
+
+回调里 **emitter/runID 不能在构造期绑定**——loop 跨请求存活,每轮的
+SSE 流与 runID 都来自该轮条目携带的 `Turn`(`turnOf` 从 `tc.Consumed`
+里取 `seq` 最大的那个)。`OnAgentEvents` 还要在事件循环里检查
+`tc.Preempted`,被抢占的旧轮不发 `RUN_FINISHED`,收尾归抢占者那一轮。
+
 ## 技术栈基线
 
 - **后端**:Go + Eino (`github.com/cloudwego/eino` 含 `/adk` 子包) + AG-UI Go SDK(走正常 go.mod 依赖,无 `replace`)。模块路径 `github.com/HandsomeNPC/EinoKit`。Store:PostgreSQL(GORM,见 `internal/memory`);checkpoint 走 Redis(`internal/checkpoint`)。

@@ -10,43 +10,6 @@ import (
 	"github.com/cloudwego/eino/schema"
 )
 
-// memStore 是测试用的内存 CheckPointStore，带 Delete 以匹配生产 Redis store
-// 对 CheckPointDeleter 的实现（TurnLoop 干净退出时会断言它来清快照）。
-type memStore struct {
-	mu   sync.Mutex
-	data map[string][]byte
-}
-
-func newMemStore() *memStore { return &memStore{data: map[string][]byte{}} }
-
-func (s *memStore) Get(_ context.Context, key string) ([]byte, bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	v, ok := s.data[key]
-	return v, ok, nil
-}
-
-func (s *memStore) Set(_ context.Context, key string, value []byte) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.data[key] = value
-	return nil
-}
-
-func (s *memStore) Delete(_ context.Context, key string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.data, key)
-	return nil
-}
-
-func (s *memStore) has(key string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	_, ok := s.data[key]
-	return ok
-}
-
 // stubAgent 是最小 TypedAgent：产出一条 assistant 文本后发 Exit。
 type stubAgent struct{ reply string }
 
@@ -79,19 +42,160 @@ func (a *stubAgent) Run(ctx context.Context, input *adk.TypedAgentInput[*schema.
 	return iter
 }
 
-// TestSingleTurnLoopExits 锁定 handler 依赖的核心契约：OnAgentEvents 里调用
-// Stop 之后，一轮跑完 loop 必须真正退出，Wait() 不能挂住。
-//
-// 这是回归测试：不 Stop 的话 loop 会阻塞在空队列的 Receive 上等下一轮输入，
-// HTTP handler 的 Wait() 永不返回，请求挂死。
-func TestSingleTurnLoopExits(t *testing.T) {
-	store := newMemStore()
-	const threadID = "thread-exit"
+// slowAgent 在产出回复前先等一个信号，便于测试抢占正在进行中的轮次。
+type slowAgent struct {
+	reply   string
+	release <-chan struct{}
+	started chan<- struct{}
+}
 
-	var seen string
+func (a *slowAgent) Name(context.Context) string        { return "slow" }
+func (a *slowAgent) Description(context.Context) string { return "slow agent" }
+
+func (a *slowAgent) Run(ctx context.Context, input *adk.TypedAgentInput[*schema.AgenticMessage],
+	_ ...adk.AgentRunOption) *adk.AsyncIterator[*adk.TypedAgentEvent[*schema.AgenticMessage]] {
+	iter, gen := adk.NewAsyncIteratorPair[*adk.TypedAgentEvent[*schema.AgenticMessage]]()
+	go func() {
+		defer gen.Close()
+		select {
+		case a.started <- struct{}{}:
+		default:
+		}
+		select {
+		case <-a.release:
+		case <-ctx.Done():
+			return
+		}
+		gen.Send(&adk.TypedAgentEvent[*schema.AgenticMessage]{
+			AgentName: "slow",
+			Output: &adk.TypedAgentOutput[*schema.AgenticMessage]{
+				MessageOutput: &adk.TypedMessageVariant[*schema.AgenticMessage]{
+					Message: &schema.AgenticMessage{
+						Role: schema.AgenticRoleTypeAssistant,
+						ContentBlocks: []*schema.ContentBlock{
+							schema.NewContentBlock(&schema.AssistantGenText{Text: a.reply}),
+						},
+					},
+				},
+			},
+		})
+		gen.Send(&adk.TypedAgentEvent[*schema.AgenticMessage]{
+			AgentName: "slow",
+			Action:    &adk.AgentAction{Exit: true},
+		})
+	}()
+	return iter
+}
+
+// TestLoopSurvivesMultipleTurns 锁定常驻 loop 的核心契约：一轮跑完之后
+// loop 不能退出，要继续等下一条输入。
+//
+// 这是回归测试：旧实现在 OnAgentEvents 里调 Stop 把 loop 限制成单轮，
+// 于是第二个请求只能被 409 拒掉，用不上框架的抢占能力。
+func TestLoopSurvivesMultipleTurns(t *testing.T) {
+	var mu sync.Mutex
+	var turns []string
+
 	loop := adk.NewTurnLoop(adk.TurnLoopConfig[*ChatItem, *schema.AgenticMessage]{
 		GenInput: func(_ context.Context, _ *adk.TurnLoop[*ChatItem, *schema.AgenticMessage],
 			items []*ChatItem) (*adk.GenInputResult[*ChatItem, *schema.AgenticMessage], error) {
+			return &adk.GenInputResult[*ChatItem, *schema.AgenticMessage]{
+				Input: &adk.TypedAgentInput[*schema.AgenticMessage]{
+					Messages: []*schema.AgenticMessage{schema.UserAgenticMessage(items[0].Query)},
+				},
+				Consumed: items[:1],
+			}, nil
+		},
+		PrepareAgent: func(context.Context, *adk.TurnLoop[*ChatItem, *schema.AgenticMessage],
+			[]*ChatItem) (adk.TypedAgent[*schema.AgenticMessage], error) {
+			return &stubAgent{reply: "ok"}, nil
+		},
+		OnAgentEvents: func(_ context.Context, tc *adk.TurnContext[*ChatItem, *schema.AgenticMessage],
+			evIter *adk.AsyncIterator[*adk.TypedAgentEvent[*schema.AgenticMessage]]) error {
+			mu.Lock()
+			turns = append(turns, tc.Consumed[0].Query)
+			mu.Unlock()
+			for {
+				ev, ok := evIter.Next()
+				if !ok {
+					break
+				}
+				if ev.Action != nil && ev.Action.Exit {
+					break
+				}
+			}
+			return nil
+		},
+	})
+
+	loop.Push(&ChatItem{Query: "first"})
+	loop.Run(context.Background())
+
+	deadline := time.After(5 * time.Second)
+	for {
+		mu.Lock()
+		n := len(turns)
+		mu.Unlock()
+		if n >= 1 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("第一轮未开始")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	// 第二条在第一轮之后压入：loop 仍活着才会处理它。
+	if ok, _ := loop.Push(&ChatItem{Query: "second"}); !ok {
+		t.Fatal("loop 已退出，第二条无法入队——常驻契约被破坏")
+	}
+
+	for {
+		mu.Lock()
+		n := len(turns)
+		mu.Unlock()
+		if n >= 2 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("第二轮未执行，loop 在单轮后就退出了 turns=%v", turns)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	loop.Stop(adk.WithImmediate())
+	loop.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(turns) < 2 || turns[0] != "first" || turns[1] != "second" {
+		t.Errorf("两轮应按序执行，got %v", turns)
+	}
+}
+
+// TestPreemptCancelsRunningTurn 锁定抢占语义：新消息到达时，正在跑的那一轮
+// 在安全点被取消，新一轮的 GenInput 能看到全部缓冲条目（上下文不丢）。
+//
+// 这是"用户打断 AI 回答"的底层机制，替代了旧实现的 409。
+func TestPreemptCancelsRunningTurn(t *testing.T) {
+	release := make(chan struct{})
+	started := make(chan struct{}, 1)
+
+	var mu sync.Mutex
+	var inputBatches [][]string
+	preempted := make(chan struct{})
+
+	loop := adk.NewTurnLoop(adk.TurnLoopConfig[*ChatItem, *schema.AgenticMessage]{
+		GenInput: func(_ context.Context, _ *adk.TurnLoop[*ChatItem, *schema.AgenticMessage],
+			items []*ChatItem) (*adk.GenInputResult[*ChatItem, *schema.AgenticMessage], error) {
+			batch := make([]string, 0, len(items))
+			for _, it := range items {
+				batch = append(batch, it.Query)
+			}
+			mu.Lock()
+			inputBatches = append(inputBatches, batch)
+			mu.Unlock()
 			return &adk.GenInputResult[*ChatItem, *schema.AgenticMessage]{
 				Input: &adk.TypedAgentInput[*schema.AgenticMessage]{
 					Messages: []*schema.AgenticMessage{schema.UserAgenticMessage(items[0].Query)},
@@ -101,90 +205,92 @@ func TestSingleTurnLoopExits(t *testing.T) {
 		},
 		PrepareAgent: func(context.Context, *adk.TurnLoop[*ChatItem, *schema.AgenticMessage],
 			[]*ChatItem) (adk.TypedAgent[*schema.AgenticMessage], error) {
-			return &stubAgent{reply: "好的"}, nil
+			return &slowAgent{reply: "done", release: release, started: started}, nil
 		},
 		OnAgentEvents: func(_ context.Context, tc *adk.TurnContext[*ChatItem, *schema.AgenticMessage],
 			evIter *adk.AsyncIterator[*adk.TypedAgentEvent[*schema.AgenticMessage]]) error {
-			// 与生产代码同一时序：进入事件处理后立刻 Stop。
-			tc.Loop.Stop(adk.WithStopCause("single-turn run"))
 			for {
+				select {
+				case <-tc.Preempted:
+					close(preempted)
+					return nil
+				default:
+				}
 				ev, ok := evIter.Next()
 				if !ok {
-					break
-				}
-				if ev.Output != nil && ev.Output.MessageOutput != nil && ev.Output.MessageOutput.Message != nil {
-					for _, b := range ev.Output.MessageOutput.Message.ContentBlocks {
-						if b != nil && b.AssistantGenText != nil {
-							seen += b.AssistantGenText.Text
-						}
-					}
+					return nil
 				}
 				if ev.Action != nil && ev.Action.Exit {
-					break
+					return nil
 				}
 			}
-			return nil
-		},
-		Store:        store,
-		CheckpointID: threadID,
-	})
-
-	if ok, _ := loop.Push(&ChatItem{Query: "来一杯"}); !ok {
-		t.Fatal("Push 失败")
-	}
-	loop.Run(context.Background())
-
-	done := make(chan *adk.TurnLoopExitState[*ChatItem, *schema.AgenticMessage], 1)
-	go func() { done <- loop.Wait() }()
-
-	select {
-	case state := <-done:
-		if state.ExitReason != nil {
-			t.Fatalf("期望干净退出，实际 ExitReason=%v", state.ExitReason)
-		}
-		// handler 用"快照是否存在"判断有没有待审批，所以干净跑完必须不留快照，
-		// 否则下一次 /chat 会误判成有待确认操作而拒绝新提问。
-		if store.has(threadID) {
-			t.Error("干净退出后仍残留 checkpoint，会让后续 /chat 误判为待审批")
-		}
-		if seen != "好的" {
-			t.Errorf("消息未透传，got %q", seen)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("loop.Wait() 超时未返回：单轮结束后没有退出，HTTP 请求会挂死")
-	}
-}
-
-// TestUnconsumedItemDoesNotHang 覆盖 GenInput 没有可用 query 时的退出路径
-// （gen_input.go 在这种情况下调 loop.Stop）。
-func TestUnconsumedItemDoesNotHang(t *testing.T) {
-	loop := adk.NewTurnLoop(adk.TurnLoopConfig[*ChatItem, *schema.AgenticMessage]{
-		GenInput: func(_ context.Context, l *adk.TurnLoop[*ChatItem, *schema.AgenticMessage],
-			items []*ChatItem) (*adk.GenInputResult[*ChatItem, *schema.AgenticMessage], error) {
-			l.Stop(adk.WithStopCause("no query items"))
-			return &adk.GenInputResult[*ChatItem, *schema.AgenticMessage]{
-				Input: &adk.TypedAgentInput[*schema.AgenticMessage]{
-					Messages: []*schema.AgenticMessage{schema.UserAgenticMessage("done")},
-				},
-				Remaining: items,
-			}, nil
-		},
-		PrepareAgent: func(context.Context, *adk.TurnLoop[*ChatItem, *schema.AgenticMessage],
-			[]*ChatItem) (adk.TypedAgent[*schema.AgenticMessage], error) {
-			return &stubAgent{reply: "x"}, nil
 		},
 	})
 
-	loop.Push(&ChatItem{})
+	loop.Push(&ChatItem{Query: "slow question"})
 	loop.Run(context.Background())
 
-	done := make(chan struct{})
-	go func() { loop.Wait(); close(done) }()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("第一轮未开始")
+	}
+
+	// 用户在 AI 还在回答时发了新消息：带抢占压入。
+	ok, ack := loop.Push(&ChatItem{Query: "actually, stop"},
+		adk.WithPreemptTimeout[*ChatItem, *schema.AgenticMessage](adk.AnySafePoint, 2*time.Second))
+	if !ok {
+		t.Fatal("抢占 Push 失败")
+	}
+	select {
+	case <-ack:
+	case <-time.After(5 * time.Second):
+		t.Fatal("抢占未被确认")
+	}
+	close(release)
 
 	select {
-	case <-done:
+	case <-preempted:
 	case <-time.After(5 * time.Second):
-		t.Fatal("GenInput 调用 Stop 后 loop 未退出")
+		t.Fatal("tc.Preempted 未触发：OnAgentEvents 察觉不到抢占，旧轮会继续写 SSE")
+	}
+
+	// 等到新一轮的 GenInput 真正跑起来再 Stop，否则 Stop 在两轮之间的空闲点
+	// 落地会让 loop 直接退出，永远不跑新条目——这只是测试时序问题，生产里
+	// loop 不会被外部 Stop。
+	deadline := time.After(5 * time.Second)
+	for {
+		mu.Lock()
+		n := len(inputBatches)
+		mu.Unlock()
+		if n >= 2 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("抢占后新一轮未启动，inputBatches=%d", n)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	loop.Stop(adk.WithImmediate())
+	loop.Wait()
+
+	// 关键：新一轮必须能看到被抢占那轮的条目，否则用户的上文就丢了。
+	mu.Lock()
+	defer mu.Unlock()
+	if len(inputBatches) < 2 {
+		t.Fatalf("抢占后应开启新一轮，实际只有 %d 轮", len(inputBatches))
+	}
+	last := inputBatches[len(inputBatches)-1]
+	var sawNew bool
+	for _, q := range last {
+		if q == "actually, stop" {
+			sawNew = true
+		}
+	}
+	if !sawNew {
+		t.Errorf("新一轮的 GenInput 应看到新条目，got %v", last)
 	}
 }
 

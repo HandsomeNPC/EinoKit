@@ -15,8 +15,6 @@ import (
 	"time"
 
 	"github.com/ag-ui-protocol/ag-ui/sdks/community/go/pkg/core/types"
-	"github.com/cloudwego/eino/adk"
-	"github.com/cloudwego/eino/schema"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
@@ -110,10 +108,9 @@ func DeleteThread(c *gin.Context) {
 		return
 	}
 
-	// 会话上还有在跑的 run 时先终止，否则它会继续往已删除的会话里写消息。
-	if turnloop.Abort(id) {
-		log.Printf("[thread] 删除会话前终止了运行中的 run thread=%s", id)
-	}
+	// 会话上还有常驻 loop 时先停掉并丢弃登记，否则它会继续往已删除的会话里
+	// 写消息，还会在 sessions 表里留一个指向不存在会话的对象。
+	turnloop.Forget(id)
 
 	if err := thread.DeleteByID(id); err != nil {
 		log.Printf("[thread] 删除会话失败 thread=%s: %v", id, err)
@@ -140,7 +137,8 @@ func DeleteThread(c *gin.Context) {
 // resume 的 interruptId 可以省略：后端用 thread_info 里的中断快照回填
 // （见 buildChatItem）。客户端传了也以服务端快照为准。
 //
-// 一个会话同一时刻只允许一个 run；并发请求返回 409。
+// 并发请求不再被拒：会话的 loop 是常驻的，新消息会抢占正在跑的那一轮
+// （见 turnloop.Submit），上一轮已产出的内容照常落库，上下文不丢。
 func Chat(c *gin.Context) {
 	var req bo.ChatRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -168,19 +166,12 @@ func Chat(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "读取会话状态失败"})
 		return
 	}
-	pending := len(interrupts) > 0
-	switch {
-	case req.IsResume() && !pending:
+	if req.IsResume() && len(interrupts) == 0 {
 		c.JSON(http.StatusConflict, gin.H{"error": "当前没有待确认的操作，无法恢复"})
-		return
-	case !req.IsResume() && pending:
-		// 不能直接丢掉新 prompt 去跑 resume：TurnLoop 读到带 runner 状态的快照
-		// 就会走 GenResume，新输入会被静默忽略。明确要求先解决审批。
-		c.JSON(http.StatusConflict, gin.H{"error": "有待确认的操作，请先批准或取消后再提问"})
 		return
 	}
 
-	item, err := buildChatItem(&req, interrupts)
+	items, err := buildChatItems(&req, interrupts)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -189,32 +180,37 @@ func Chat(c *gin.Context) {
 	runID := uuid.New().String()
 	emitter := agui.NewEmitter(c, id, runID)
 
-	// loop 用脱离请求的 context：浏览器断开后 OnAgentEvents 仍要把已产出的
-	// 消息累积落库（它内部用 writerBroken 兜住写失败），不能被请求取消带走。
-	// 终止由 /abort 经 registry 下达，handler 则 Wait 到 loop 真正结束——
-	// 这样才不会在 gin 回收 ResponseWriter 之后还往里写。
-	loop := turnloop.NewTurnLoop(id, runID, emitter)
-
-	// 先占到运行权再写 SSE 头：抢占失败要回 409 JSON，头一旦发出就只能发事件了。
-	deregister, err := turnloop.TryRegister(id, loop)
+	// 先提交再写 SSE 头：提交失败要回 JSON，头一旦发出就只能发事件了。
+	// 条目进的是会话常驻 loop，若它正忙则第一个条目触发抢占。
+	turn, err := turnloop.Submit(id, runID, emitter, items...)
 	if err != nil {
-		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
 		return
 	}
-	defer deregister()
 
 	writeSSEHeaders(c)
 	emitter.RunStarted()
 
-	if ok, _ := loop.Push(item); !ok {
-		emitter.RunError("会话已停止，无法处理本次请求")
-		return
+	// 等本次请求的全部条目处理完。loop 跨请求存活，所以这里等的是 Turn
+	// 而不是整个 loop；浏览器断开也不影响 loop 继续把消息落库。
+	select {
+	case <-turn.Done():
+	case <-c.Request.Context().Done():
+		// 客户端断开：loop 照常跑完并落库，这里只是不再占着 handler。
+		log.Printf("[thread] 客户端断开，run 继续在后台完成 thread=%s run=%s", id, runID)
 	}
-	loop.Run(context.WithoutCancel(c.Request.Context()))
 
-	state := loop.Wait()
-	logExit(id, runID, state)
-	maybeBackfillTitle(id, item.Query)
+	maybeBackfillTitle(id, firstQuery(items))
+}
+
+// firstQuery 取本次请求里第一条用户提问，用于回填会话标题。
+func firstQuery(items []*turnloop.ChatItem) string {
+	for _, it := range items {
+		if it.Query != "" {
+			return it.Query
+		}
+	}
+	return ""
 }
 
 // maybeBackfillTitle 在会话标题为空时用首轮用户输入回填，便于侧边栏展示。
@@ -237,10 +233,19 @@ func maybeBackfillTitle(threadID, query string) {
 	}
 }
 
-// buildChatItem 把请求体翻译成 TurnLoop 的队列条目。
+// buildChatItems 把请求体翻译成 TurnLoop 的队列条目（按执行顺序）。
 //
-// interrupts 是服务端记录的待确认中断（resume 路径下必非空，调用方已校验）。
-func buildChatItem(req *bo.ChatRequest, interrupts []types.Interrupt) (*turnloop.ChatItem, error) {
+// interrupts 是服务端记录的待确认中断。三种组合：
+//   - resume：只回一个恢复条目（调用方已保证 interrupts 非空）；
+//   - 提问 + 无待确认中断：只回一个提问条目；
+//   - 提问 + 有待确认中断：先回一个"取消"条目再跟提问条目。
+//
+// 最后那种是关键：用户在审批卡片上不做选择、直接输入新消息，意思就是放弃
+// 这次审批。不能直接把新 prompt 丢给 loop —— 它读到带 runner 状态的快照
+// 会走 GenResume，新输入被静默忽略；也不该报错让用户卡死在"请先批准或取消"。
+// 所以这里替用户表达取消：工具会返回"用户取消了本次下单"，模型能看到这个
+// 结果，历史完整，然后新 prompt 正常执行。
+func buildChatItems(req *bo.ChatRequest, interrupts []types.Interrupt) ([]*turnloop.ChatItem, error) {
 	if req.IsResume() {
 		// 一次只恢复一个中断点：当前 agent 只会产生单个根因中断
 		// （见 turnloop.toAGUIInterrupts 的取值策略）。
@@ -248,18 +253,27 @@ func buildChatItem(req *bo.ChatRequest, interrupts []types.Interrupt) (*turnloop
 		// interruptId 取服务端快照而非客户端传入值：前者是 ADK 认的那个 ID，
 		// 后者可能过期（页面停留期间 run 已被别的请求恢复）或被伪造。
 		// 客户端只需要表达"批准还是拒绝"。
-		entry := req.Resume[0]
-		return &turnloop.ChatItem{
+		return []*turnloop.ChatItem{{
 			InterruptID:      interrupts[0].ID,
-			InterruptContent: resumeDecision(entry),
-		}, nil
+			InterruptContent: resumeDecision(req.Resume[0]),
+		}}, nil
 	}
 
 	prompt := strings.TrimSpace(req.Prompt)
 	if prompt == "" {
 		return nil, errors.New("prompt 不能为空")
 	}
-	return &turnloop.ChatItem{Query: prompt}, nil
+
+	items := make([]*turnloop.ChatItem, 0, 2)
+	if len(interrupts) > 0 {
+		log.Printf("[thread] 新提问覆盖待确认中断，按取消处理 interrupt=%s", interrupts[0].ID)
+		items = append(items, &turnloop.ChatItem{
+			InterruptID: interrupts[0].ID,
+			// false == 用户取消（见 resumeDecision 的归一规则）。
+			InterruptContent: false,
+		})
+	}
+	return append(items, &turnloop.ChatItem{Query: prompt}), nil
 }
 
 // resumeDecision 把 AG-UI 的 ResumeEntry 归一成工具侧 GetResumeContext[bool]
@@ -311,23 +325,6 @@ func loadPendingInterrupts(ctx context.Context, threadID string, info *thread.Th
 		return nil, nil
 	}
 	return interrupts, nil
-}
-
-// logExit 把 loop 退出原因落日志。中断退出是预期路径，不记为错误。
-func logExit(threadID, runID string, state *adk.TurnLoopExitState[*turnloop.ChatItem, *schema.AgenticMessage]) {
-	if state == nil {
-		return
-	}
-	if state.CheckpointErr != nil {
-		log.Printf("[thread] 保存 checkpoint 失败 thread=%s run=%s: %v", threadID, runID, state.CheckpointErr)
-	}
-	if state.ExitReason != nil {
-		log.Printf("[thread] run 结束 thread=%s run=%s reason=%v cause=%q interrupted=%d unhandled=%d",
-			threadID, runID, state.ExitReason, state.StopCause,
-			len(state.InterruptedItems), len(state.UnhandledItems))
-		return
-	}
-	log.Printf("[thread] run 正常结束 thread=%s run=%s", threadID, runID)
 }
 
 // Render 渲染会话历史。POST /threads/render

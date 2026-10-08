@@ -3,11 +3,13 @@ package turnloop
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"strings"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/schema"
+	"github.com/google/uuid"
 
 	"github.com/HandsomeNPC/EinoKit/internal/memory/thread"
 	"github.com/HandsomeNPC/EinoKit/internal/msgops"
@@ -16,7 +18,10 @@ import (
 // makeGenInput 返回 GenInput 回调。每轮开始时调用,从队列里的 ChatItem
 // 中挑出第一条 query,持久化为用户消息,再拼上会话历史,产出喂给 Agent
 // 的 TypedAgentInput。
-func makeGenInput(threadID, runID string) func(ctx context.Context, loop *adk.TurnLoop[*ChatItem, *schema.AgenticMessage], items []*ChatItem) (*adk.GenInputResult[*ChatItem, *schema.AgenticMessage], error) {
+//
+// runID 取自条目所属的 Turn:loop 常驻、跨多次请求,每轮落库要归到发起
+// 它的那次请求名下。
+func makeGenInput(threadID string) func(ctx context.Context, loop *adk.TurnLoop[*ChatItem, *schema.AgenticMessage], items []*ChatItem) (*adk.GenInputResult[*ChatItem, *schema.AgenticMessage], error) {
 	return func(ctx context.Context, loop *adk.TurnLoop[*ChatItem, *schema.AgenticMessage], items []*ChatItem) (*adk.GenInputResult[*ChatItem, *schema.AgenticMessage], error) {
 		// 找到第一个带 query 的条目。
 		var consumed []*ChatItem
@@ -31,15 +36,18 @@ func makeGenInput(threadID, runID string) func(ctx context.Context, loop *adk.Tu
 			}
 		}
 		if queryItem == nil {
-			// 没有 query 条目 —— 停止 loop。
-			loop.Stop(adk.WithStopCause("no query items"))
-			return &adk.GenInputResult[*ChatItem, *schema.AgenticMessage]{
-				Input: &adk.TypedAgentInput[*schema.AgenticMessage]{
-					Messages: []*schema.AgenticMessage{schema.UserAgenticMessage("done")},
-				},
-				Remaining: items,
-			}, nil
+			// 没有 query 条目 —— 放行这些条目对应的请求，避免 handler 干等，
+			// 然后交还给 loop 继续等新输入（不再 Stop:loop 是常驻的,
+			// 空闲回收由 UntilIdleFor 负责）。
+			for _, item := range items {
+				if item != nil && item.turn != nil {
+					item.turn.completeOne()
+				}
+			}
+			return nil, errNoQueryItems
 		}
+
+		runID := runIDOf(queryItem)
 
 		// 现在持久化用户消息 —— GenInput 只在前一轮的 OnAgentEvents
 		// 完成其中间消息持久化之后才触发,因此会话历史的顺序得以保证正确。
@@ -56,7 +64,7 @@ func makeGenInput(threadID, runID string) func(ctx context.Context, loop *adk.Tu
 		history := loadHistory(threadID)
 		runMessages := buildRunMessages(threadID, history)
 
-		log.Printf("[genInput] thread=%s query=%q messages=%d", threadID, queryItem.Query, len(runMessages))
+		log.Printf("[genInput] thread=%s run=%s query=%q messages=%d", threadID, runID, queryItem.Query, len(runMessages))
 
 		return &adk.GenInputResult[*ChatItem, *schema.AgenticMessage]{
 			Input: &adk.TypedAgentInput[*schema.AgenticMessage]{
@@ -67,6 +75,19 @@ func makeGenInput(threadID, runID string) func(ctx context.Context, loop *adk.Tu
 			Remaining: remaining,
 		}, nil
 	}
+}
+
+// errNoQueryItems 表示本批条目里没有可跑的提问。返回它会让 loop 退出,
+// 下次请求再新建 —— 这是防御性分支,正常路径不会走到。
+var errNoQueryItems = errors.New("turnloop: 没有可执行的提问条目")
+
+// runIDOf 取条目所属请求的 runID。条目没带 Turn(如从 checkpoint 恢复出来的
+// 旧条目)时回退到一个新 ID,保证落库仍有分组键。
+func runIDOf(item *ChatItem) string {
+	if item != nil && item.turn != nil {
+		return item.turn.RunID()
+	}
+	return uuid.New().String()
 }
 
 // buildRunMessages 在会话历史前面追加一条 [Context] 上下文消息,让

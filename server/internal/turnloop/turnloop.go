@@ -7,16 +7,19 @@ import (
 	"github.com/cloudwego/eino/schema"
 
 	"github.com/HandsomeNPC/EinoKit/internal/agents"
-	"github.com/HandsomeNPC/EinoKit/internal/agui"
 	"github.com/HandsomeNPC/EinoKit/internal/checkpoint"
 	"github.com/HandsomeNPC/EinoKit/internal/memory/thread"
 )
 
-func NewTurnLoop(threadID, runID string, emitter *agui.Emitter) *adk.TurnLoop[*ChatItem, *schema.AgenticMessage] {
+// NewTurnLoop 构造一个会话的常驻 loop。
+//
+// 注意这里只绑 threadID，不绑 runID/emitter：loop 跨多次 HTTP 请求存活，
+// 每轮的 runID 与 SSE 流都来自该轮条目携带的 Turn（见 turnOf）。
+func NewTurnLoop(threadID string) *Loop {
 	cfg := adk.TurnLoopConfig[*ChatItem, *schema.AgenticMessage]{
-		GenInput:      makeGenInput(threadID, runID),               //每轮开始时调用，决定"这一轮 Agent 看到什么"
-		PrepareAgent:  makePrepareAgent(threadID),                  //每轮调用一次，返回本轮使用的 Agent
-		OnAgentEvents: makeOnAgentEvents(threadID, runID, emitter), //接收Agent的事件流，负责渲染输出和持久化中间消息
+		GenInput:      makeGenInput(threadID),      //每轮开始时调用，决定"这一轮 Agent 看到什么"
+		PrepareAgent:  makePrepareAgent(threadID),  //每轮调用一次，返回本轮使用的 Agent
+		OnAgentEvents: makeOnAgentEvents(threadID), //接收Agent的事件流，负责渲染输出和持久化中间消息
 		//以下三个字段用于声明式 checkpoint（审批恢复）
 		GenResume:    makeGenResume(),
 		Store:        checkpoint.GetInstance(),

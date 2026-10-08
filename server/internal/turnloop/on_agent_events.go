@@ -12,6 +12,7 @@ import (
 	"github.com/ag-ui-protocol/ag-ui/sdks/community/go/pkg/core/types"
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/schema"
+	"github.com/google/uuid"
 
 	"github.com/HandsomeNPC/EinoKit/internal/agui"
 	"github.com/HandsomeNPC/EinoKit/internal/memory/thread"
@@ -21,19 +22,30 @@ import (
 var errInterrupted = errors.New("agent interrupted for approval")
 
 // makeOnAgentEvents 返回 OnAgentEvents 回调。
-func makeOnAgentEvents(threadID, runID string, emitter *agui.Emitter) func(ctx context.Context, tc *adk.TurnContext[*ChatItem, *schema.AgenticMessage], evIter *adk.AsyncIterator[*adk.TypedAgentEvent[*schema.AgenticMessage]]) error {
+func makeOnAgentEvents(threadID string) func(ctx context.Context, tc *adk.TurnContext[*ChatItem, *schema.AgenticMessage], evIter *adk.AsyncIterator[*adk.TypedAgentEvent[*schema.AgenticMessage]]) error {
 	return func(ctx context.Context, tc *adk.TurnContext[*ChatItem, *schema.AgenticMessage], evIter *adk.AsyncIterator[*adk.TypedAgentEvent[*schema.AgenticMessage]]) error {
-		// 一次 HTTP 请求 = 一个 loop = 一轮对话，所以这里就把 loop 标记为停止：
-		// 不带 cancel 选项的 Stop 不会打断本轮，agent 照常跑完，loop 只是不再开下一轮。
-		// 必须显式 Stop——否则本轮结束后 loop 会阻塞在空队列的 Receive 上等新输入，
-		// handler 的 Wait() 永远不返回，请求就挂死了。
-		// 放在这里而不是 handler 里：此刻本轮已通过全部 isCommitted 检查并开始执行，
-		// 在 handler 里 Push 后立刻 Stop 则可能让 loop 在取出条目前就退出，输入被丢掉。
-		tc.Loop.Stop(adk.WithStopCause("single-turn run"))
+		// 本轮归属哪次 HTTP 请求：决定事件往哪条 SSE 流写、消息用哪个 runID
+		// 落库。loop 是常驻的，这些不能在构造期绑定。
+		turn := turnOf(tc.Consumed)
+		if turn == nil {
+			// 条目不带 Turn —— 只可能是从 checkpoint 恢复出来的旧条目，
+			// 其 SSE 连接早断了。照常消费事件把消息落库，但不写 UI。
+			log.Printf("warn: 本轮没有关联请求，仅落库不推送 thread=%s", threadID)
+		}
+		runID := turnRunID(turn)
+		emitter := turnEmitter(turn)
+
+		// 本轮结束时放行对应请求（被抢占的情况在下面单独处理）。
+		defer func() {
+			if turn != nil && !turn.Preempted() {
+				turn.completeOne()
+			}
+		}()
 
 		// writerBroken 在 SSE 写入失败(浏览器关页/断网)时置位。置位后
 		// 停止向 UI 写,但继续消费事件、累积消息,以保住后台任务。
-		writerBroken := false
+		// 没有 emitter（孤儿轮次）时直接视为已断。
+		writerBroken := emitter == nil
 		markBroken := func() {
 			if !writerBroken && emitter.Err() != nil {
 				writerBroken = true
@@ -49,6 +61,19 @@ func makeOnAgentEvents(threadID, runID string, emitter *agui.Emitter) func(ctx c
 			if !ok {
 				// 事件流正常耗尽(迭代器关闭)。
 				break
+			}
+
+			// 0) 被后来的请求抢占:框架已在安全点取消 agent。本轮的已产出内容
+			// 照常落库,但不发 RUN_FINISHED —— 收尾归抢占者那一轮。
+			select {
+			case <-tc.Preempted:
+				flushPending(threadID, runID, &pending)
+				if turn != nil {
+					turn.markPreempted()
+				}
+				log.Printf("[turnloop] 本轮被新消息抢占 thread=%s run=%s", threadID, runID)
+				return nil
+			default:
 			}
 
 			// 1) 错误事件:发 RUN_ERROR,flush 已累积的消息,返回 err。
@@ -109,12 +134,30 @@ func makeOnAgentEvents(threadID, runID string, emitter *agui.Emitter) func(ctx c
 		// 跑到这里说明本轮没有中断(正常 Exit 或事件流耗尽),清掉上一轮可能
 		// 残留的快照——resume 成功收尾走的正是这条路径。
 		clearPendingInterrupt(threadID)
+		// 抢占可能恰好在最后一个事件后到达,此时本轮其实已经跑完,
+		// 照常发 RUN_FINISHED,但请求的放行仍归 markPreempted。
 		if !writerBroken {
 			emitter.RunFinishedSuccess()
 			markBroken()
 		}
 		return nil
 	}
+}
+
+// turnRunID / turnEmitter 兜住 turn 为 nil 的孤儿轮次（条目从 checkpoint
+// 恢复、原请求早已结束）。
+func turnRunID(t *Turn) string {
+	if t == nil {
+		return "orphan-" + uuid.New().String()
+	}
+	return t.RunID()
+}
+
+func turnEmitter(t *Turn) *agui.Emitter {
+	if t == nil {
+		return nil
+	}
+	return t.Emitter()
 }
 
 // savePendingInterrupt 把本轮产生的中断落库,供 /render 恢复审批卡片与
