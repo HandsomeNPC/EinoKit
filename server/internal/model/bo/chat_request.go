@@ -1,9 +1,25 @@
 // Package bo 定义业务对象（business object），承载接口入参的 DTO。
 package bo
 
-// ChatRequest 是对话接口的请求体
+import "github.com/ag-ui-protocol/ag-ui/sdks/community/go/pkg/core/types"
+
+// ChatRequest 是对话接口的请求体。
+//
+// 一次请求只做一件事，二者互斥：
+//   - 新一轮提问：填 Prompt（可带 Attachments）；
+//   - 恢复中断：填 Resume，Prompt 留空。
+//
+// Resume 直接复用 AG-UI 协议的 ResumeEntry，与前端 AGUIAdapter 同源，
+// 批准为 {"interruptId":"...","status":"resolved","payload":true}，
+// 拒绝为 {"interruptId":"...","status":"cancelled"}。
 type ChatRequest struct {
 	TDesignChatRequestParams
+	Resume []types.ResumeEntry `json:"resume,omitempty"`
+}
+
+// IsResume 判断本次请求是否为中断恢复。
+func (r *ChatRequest) IsResume() bool {
+	return len(r.Resume) > 0
 }
 
 // TDesignChatRequestParams 对齐 TDesign ChatEngine 的 ChatRequestParams 固有部分，

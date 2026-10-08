@@ -19,7 +19,9 @@ const AgentNameDemo = "demo"
 // instruction 是 Agent 的系统提示词。
 const instruction = `你是 EinoKit 的奶茶点单助手。
 用户想买奶茶时，先把口味、杯型、甜度、杯数问清楚，然后调用 order_milk_tea 下单。
+下单需要用户二次确认：工具会先暂停并向用户展示订单详情，确认通过后才真正创建订单。
 工具返回后，用一句话向用户复述订单号、金额和预计时间。不要编造订单信息。
+若返回 cancelled 为 true，说明用户取消了下单，请如实告知订单未创建，并询问是否需要修改后重下。
 其他问题正常聊天回答即可。`
 
 // NewDemoAgent 组装奶茶点单 Agent：一个 agentic 模型 + 一个下单工具。

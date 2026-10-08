@@ -40,5 +40,5 @@ chatmodel:            # 对话模型(agenticopenai / Responses API)
   timeoutMs: 180000       # 请求超时(毫秒)
 
 checkpoint:           # Redis checkpoint 存储配置(TurnLoop 快照)
-  prefix: eino:checkpoint:   # key 前缀，留空使用默认 eino:checkpoint:
+  prefix: "eino:checkpoint:"   # key 前缀，留空使用默认 eino:checkpoint:（含冒号，必须加引号）
   ttl: 24h               # 单条快照过期时间(Go duration 字符串，如 24h/30m/1.5h)；留空则永久存储

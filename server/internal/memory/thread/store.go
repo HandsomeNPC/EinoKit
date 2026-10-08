@@ -58,6 +58,22 @@ func SelectList() ([]*ThreadInfo, error) {
 	return rows, nil
 }
 
+// UpdateTitle 更新会话标题。
+func UpdateTitle(id, title string) error {
+	if id == "" {
+		return fmt.Errorf("thread: 会话主键为空")
+	}
+	res := database.GetInstance().WithContext(context.Background()).Model(&ThreadInfo{}).
+		Where("thread_id = ?", id).Update("title", title)
+	if res.Error != nil {
+		return fmt.Errorf("thread: 更新会话标题 id=%s 失败: %w", id, res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return ErrThreadNotFound
+	}
+	return nil
+}
+
 // DeleteByID 删除会话及其全部消息，两步同事务以免留下孤儿消息。
 // 表无外键约束（迁移期禁用），故级联删除由本方法显式完成。
 func DeleteByID(id string) error {

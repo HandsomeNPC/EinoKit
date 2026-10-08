@@ -28,6 +28,9 @@ server/einoit.db-*
 *.db-wal
 *.db-shm
 
+# 会话工作区：/threads/:id/docs 上传的文件
+server/data/
+
 # ===== Node / Vue (web/) =====
 node_modules/
 web/node_modules/

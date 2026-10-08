@@ -20,9 +20,17 @@ import (
 
 var errInterrupted = errors.New("agent interrupted for approval")
 
-// makeOnAgentEvents 返回 OnAgentEvents 回调。的那条 tool_call。
+// makeOnAgentEvents 返回 OnAgentEvents 回调。
 func makeOnAgentEvents(threadID, runID string, emitter *agui.Emitter) func(ctx context.Context, tc *adk.TurnContext[*ChatItem, *schema.AgenticMessage], evIter *adk.AsyncIterator[*adk.TypedAgentEvent[*schema.AgenticMessage]]) error {
 	return func(ctx context.Context, tc *adk.TurnContext[*ChatItem, *schema.AgenticMessage], evIter *adk.AsyncIterator[*adk.TypedAgentEvent[*schema.AgenticMessage]]) error {
+		// 一次 HTTP 请求 = 一个 loop = 一轮对话，所以这里就把 loop 标记为停止：
+		// 不带 cancel 选项的 Stop 不会打断本轮，agent 照常跑完，loop 只是不再开下一轮。
+		// 必须显式 Stop——否则本轮结束后 loop 会阻塞在空队列的 Receive 上等新输入，
+		// handler 的 Wait() 永远不返回，请求就挂死了。
+		// 放在这里而不是 handler 里：此刻本轮已通过全部 isCommitted 检查并开始执行，
+		// 在 handler 里 Push 后立刻 Stop 则可能让 loop 在取出条目前就退出，输入被丢掉。
+		tc.Loop.Stop(adk.WithStopCause("single-turn run"))
+
 		// writerBroken 在 SSE 写入失败(浏览器关页/断网)时置位。置位后
 		// 停止向 UI 写,但继续消费事件、累积消息,以保住后台任务。
 		writerBroken := false
