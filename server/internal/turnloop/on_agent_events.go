@@ -281,6 +281,10 @@ func markBrokenOrSkip(emitter *agui.Emitter, markBroken func()) bool {
 // toAGUIInterrupts 把 ADK 的 InterruptContexts 转成 AG-UI 的 []types.Interrupt。
 // 优先取 IsRootCause 的那一个;都没有就退化用第一个。客户端据此拿到 interruptID,
 // 审批时原样回传,GenResume 用它组 ResumeParams.Targets。
+//
+// ToolCallID 从中断地址里的 tool 段取(见 toolCallIDOf):前端据此把中断关联回
+// 对应的 tool call 块,从而复用该工具已注册的渲染组件,不需要前后端各自硬编码
+// 某个工具名。Reason 固定 "tool_call" —— 当前所有中断都源自工具调用。
 func toAGUIInterrupts(ictxs []*adk.InterruptCtx) []types.Interrupt {
 	var pick *adk.InterruptCtx
 	for _, ic := range ictxs {
@@ -295,7 +299,31 @@ func toAGUIInterrupts(ictxs []*adk.InterruptCtx) []types.Interrupt {
 	if pick == nil {
 		return nil
 	}
-	return []types.Interrupt{{ID: pick.ID, Message: infoToString(pick.Info)}}
+	it := types.Interrupt{
+		ID:      pick.ID,
+		Message: infoToString(pick.Info),
+	}
+	if callID := toolCallIDOf(pick); callID != "" {
+		it.Reason = "tool_call"
+		it.ToolCallID = callID
+	}
+	return []types.Interrupt{it}
+}
+
+// toolCallIDOf 从中断地址里取触发它的 tool call ID。
+//
+// ADK 的 Address 形如 "agent:A;tool:order_milk_tea:call_abc123"。compose 的 ToolsNode
+// 派发工具时调 appendToolAddressSegment(ctx, task.name, task.callID),所以 tool 段的
+// ID 是工具名、SubID 才是 call ID(SubID 的存在正是为了区分同名并发调用)。
+// 从后往前找:嵌套 agent-as-tool 场景下最靠近叶子的 tool 段才是真正发起调用的那个。
+// 没有 tool 段或 SubID 为空时返回空串,调用方据此跳过关联。
+func toolCallIDOf(ic *adk.InterruptCtx) string {
+	for i := len(ic.Address) - 1; i >= 0; i-- {
+		if ic.Address[i].Type == adk.AddressSegmentTool {
+			return ic.Address[i].SubID
+		}
+	}
+	return ""
 }
 
 // infoToString 把 InterruptCtx.Info(any)格式化为字符串,优先用 fmt.Stringer。

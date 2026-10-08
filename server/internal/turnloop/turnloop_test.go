@@ -187,3 +187,76 @@ func TestUnconsumedItemDoesNotHang(t *testing.T) {
 		t.Fatal("GenInput 调用 Stop 后 loop 未退出")
 	}
 }
+
+// TestToAGUIInterruptsCarriesToolCallID 锁定中断 → tool call 的关联方式。
+//
+// 前端靠 Interrupt.ToolCallID 把审批请求关联回对应的 tool call 块，从而复用该
+// 工具已注册的渲染组件。关联键取自 Address 里 tool 段的 SubID 而非 ID：
+// compose 的 ToolsNode 调 appendToolAddressSegment(ctx, task.name, task.callID)，
+// 所以 ID 是工具名、SubID 才是 call ID。写反了前端会拿工具名当 ID 去匹配，
+// 永远匹配不上且不报错——正是这个测试要挡住的。
+func TestToAGUIInterruptsCarriesToolCallID(t *testing.T) {
+	ictxs := []*adk.InterruptCtx{
+		{
+			ID: "agent:demo;tool:order_milk_tea:call_abc123",
+			Address: adk.Address{
+				{Type: adk.AddressSegmentAgent, ID: "demo"},
+				{Type: adk.AddressSegmentTool, ID: "order_milk_tea", SubID: "call_abc123"},
+			},
+			Info:        "确认下单？",
+			IsRootCause: true,
+		},
+	}
+
+	got := toAGUIInterrupts(ictxs)
+	if len(got) != 1 {
+		t.Fatalf("期望 1 个 interrupt，got %d", len(got))
+	}
+	if got[0].ID != ictxs[0].ID {
+		t.Errorf("ID 应原样透传（resume 要拿它回填 Targets），got %q", got[0].ID)
+	}
+	if got[0].ToolCallID != "call_abc123" {
+		t.Errorf("ToolCallID 应取 tool 段的 SubID，got %q", got[0].ToolCallID)
+	}
+	if got[0].Reason != "tool_call" {
+		t.Errorf("Reason 应为 tool_call，got %q", got[0].Reason)
+	}
+	if got[0].Message != "确认下单？" {
+		t.Errorf("Message 应来自 Info，got %q", got[0].Message)
+	}
+}
+
+// TestToAGUIInterruptsPicksInnermostTool 覆盖 agent-as-tool 嵌套：
+// 最靠近叶子的 tool 段才是真正发起调用的那个。
+func TestToAGUIInterruptsPicksInnermostTool(t *testing.T) {
+	got := toAGUIInterrupts([]*adk.InterruptCtx{
+		{
+			Address: adk.Address{
+				{Type: adk.AddressSegmentTool, ID: "outer_agent", SubID: "call_outer"},
+				{Type: adk.AddressSegmentTool, ID: "inner_tool", SubID: "call_inner"},
+			},
+			IsRootCause: true,
+		},
+	})
+	if got[0].ToolCallID != "call_inner" {
+		t.Errorf("应取最内层 tool 段，got %q", got[0].ToolCallID)
+	}
+}
+
+// TestToAGUIInterruptsWithoutToolSegment 非工具触发的中断不该伪造 tool 关联，
+// 否则前端会拿空 ID 去匹配 tool call 块。
+func TestToAGUIInterruptsWithoutToolSegment(t *testing.T) {
+	got := toAGUIInterrupts([]*adk.InterruptCtx{
+		{
+			ID:          "agent:demo",
+			Address:     adk.Address{{Type: adk.AddressSegmentAgent, ID: "demo"}},
+			IsRootCause: true,
+		},
+	})
+	if got[0].ToolCallID != "" {
+		t.Errorf("无 tool 段时 ToolCallID 应为空，got %q", got[0].ToolCallID)
+	}
+	if got[0].Reason != "" {
+		t.Errorf("无 tool 段时 Reason 应为空，got %q", got[0].Reason)
+	}
+}

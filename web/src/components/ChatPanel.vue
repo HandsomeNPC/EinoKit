@@ -2,16 +2,17 @@
 /**
  * EinoKit 对话面板。
  *
- * 结构对齐 TDesignChatStudy 的 demo：useChat 直接用，不再包中间层；
- * 工具调用(含审批)统一走 useAgentToolcall + ToolCallRenderer 渲染。
+ * 工具调用(含需要审批的)统一走 useAgentToolcall + ToolCallRenderer 渲染：
+ * 注册时不配 handler 即为交互式工具，渲染器把 respond 交给组件等用户操作。
  *
- * 与 demo 的差异只有一处：后端的审批是 AG-UI 原生 interrupt
- * (RUN_FINISHED.outcome.interrupts)，不是 toolCallMessage，
- * 所以 respond 回调用 resumeRun 发 `{resume:[...]}`(见 onOrderRespond)。
+ * 与 TDesign demo 的唯一差异在 respond 的回传路径：demo 用 toolCallMessage
+ * 走 sendAIMessage，而本项目后端是 AG-UI 原生 interrupt，恢复时要的是
+ * `{resume:[{interruptId,...}]}`，所以走 resumeRun(见 onToolRespond)。
  */
-import {computed, onMounted, ref, watch} from 'vue'
+import {computed, onMounted, ref} from 'vue'
 import {
   type AgentToolcallConfig,
+  type AIMessageContent,
   type ChatMessagesData,
   type ChatRequestParams,
   type TdChatMessageConfig,
@@ -25,7 +26,7 @@ import {
 
 import {
   abortThread,
-  chatEndpoint,
+  CHAT_ENDPOINT,
   createThread,
   deleteThread,
   listThreads,
@@ -41,13 +42,14 @@ const errorMessage = ref('')
 const inputValue = ref('')
 
 /**
- * 当前待确认的中断。
+ * 待确认的中断，按 toolCallId 索引。
  *
- * 后端用 AG-UI 的 interrupt 表达审批：RUN_FINISHED 带
- * `outcome:{type:'interrupt',interrupts:[...]}`。审批卡片本身由
- * order_milk_tea 的工具组件渲染，这里只存 interruptId 供 resume 时回填。
+ * 后端在 RUN_FINISHED 的 `outcome.interrupts[]` 里带上触发中断的 toolCallId
+ * (从 ADK 的中断地址解析)，所以这里能把中断关联回具体的 tool call 块——
+ * respond 回调拿到 toolCall 就能反查出该回填哪个 interruptId。
+ * 这条链路与具体是哪个工具无关，新增需要审批的工具不必改这里。
  */
-const pendingInterrupt = ref<AGUIInterrupt | null>(null)
+const pendingInterrupts = ref(new Map<string, AGUIInterrupt>())
 
 /**
  * 注册工具渲染组件。不配 handler = 交互式工具，ToolCallRenderer 不会自动执行，
@@ -78,9 +80,8 @@ useAgentToolcall(toolcallActions)
 const {chatEngine, messages, status} = useChat({
   defaultMessages: [],
   chatServiceConfig: {
-    // endpoint 先留空：引擎只在 init 时求值一次配置，
-    // 选中会话后用 updateEndpoint 注入。
-    endpoint: '',
+    // endpoint 是常量：threadId 走请求体，切会话不必 updateEndpoint。
+    endpoint: CHAT_ENDPOINT,
     protocol: 'agui',
     transport: 'sse',
 
@@ -90,9 +91,10 @@ const {chatEngine, messages, status} = useChat({
       const {resume} = params as ChatRequestParams<{
         resume?: ChatRequestBody['resume']
       }>
+      // 在发请求这一刻读 activeThreadId，所以切会话天然生效。
       const body: ChatRequestBody = resume?.length
-          ? {resume}
-          : {prompt: params.prompt ?? ''}
+          ? {threadId: activeThreadId.value, resume}
+          : {threadId: activeThreadId.value, prompt: params.prompt ?? ''}
 
       return {
         method: 'POST',
@@ -105,7 +107,9 @@ const {chatEngine, messages, status} = useChat({
     // 所以 Go SDK 写的 outcome.interrupts 能完整读到。
     onComplete: (isAborted, _params, result) => {
       if (isAborted) return
-      pendingInterrupt.value = extractInterrupt(result)
+      for (const it of extractInterrupts(result)) {
+        if (it.toolCallId) pendingInterrupts.value.set(it.toolCallId, it)
+      }
     },
 
     // 断开 SSE 不会让后端的 run 停下，必须显式调 /abort。
@@ -138,42 +142,44 @@ const activeThread = computed(() =>
     threads.value.find((t: ThreadInfo) => t.threadId === activeThreadId.value),
 )
 
-/** 从 RUN_FINISHED 的 outcome 里取第一个中断。 */
-function extractInterrupt(result: unknown): AGUIInterrupt | null {
-  if (!result || typeof result !== 'object') return null
-  const outcome = (result as { outcome?: { type?: string; interrupts?: AGUIInterrupt[] } })
-      .outcome
-  if (outcome?.type !== 'interrupt') return null
-  return outcome.interrupts?.find((it) => Boolean(it?.id)) ?? null
+/** 从 RUN_FINISHED 的 outcome 里取出全部中断。 */
+function extractInterrupts(result: unknown): AGUIInterrupt[] {
+  if (!result || typeof result !== 'object') return []
+  const outcome = (result as {
+    outcome?: { type?: string; interrupts?: AGUIInterrupt[] }
+  }).outcome
+  if (outcome?.type !== 'interrupt') return []
+  return outcome.interrupts?.filter((it) => Boolean(it?.id)) ?? []
 }
 
 /**
- * 审批卡片的回调。
+ * 工具卡片的 respond 回调。
  *
- * 走 resumeRun 而不是 demo 里的 sendAIMessage：后端用 AG-UI interrupt 表达
- * 审批，恢复时要的是 `{resume:[{interruptId,status,payload}]}`，
- * 且不该再往列表里插一条用户气泡。
+ * 对任意工具通用：用 toolCallId 反查出对应的中断，把用户的回传值作为
+ * resume payload 发回后端。约定 `response === false` 表示取消
+ * (审批类卡片回传布尔值)，其余一律视为已解决，response 原样作为 payload，
+ * 这样需要结构化回执的工具(如表单)不必改动这里。
  */
-async function onOrderRespond(_toolCall: ToolCall, approved: boolean) {
-  const target = pendingInterrupt.value
+async function onToolRespond(toolCall: ToolCall, response: unknown) {
+  const target = pendingInterrupts.value.get(toolCall.toolCallId)
   if (!target) {
     // 刷新页面后拿不到 interruptId(/render 只给布尔标记)，无法恢复。
     errorMessage.value = '审批信息已失效（页面刷新过），请重新提问。'
     return
   }
 
-  pendingInterrupt.value = null
+  pendingInterrupts.value.delete(toolCall.toolCallId)
   errorMessage.value = ''
   try {
     await chatEngine.value?.resumeRun({
       resume: [
-        approved
-            ? {interruptId: target.id, status: 'resolved', payload: true}
-            : {interruptId: target.id, status: 'cancelled'},
+        response === false
+            ? {interruptId: target.id, status: 'cancelled'}
+            : {interruptId: target.id, status: 'resolved', payload: response},
       ],
     } as ChatRequestParams)
   } catch (err) {
-    pendingInterrupt.value = target
+    pendingInterrupts.value.set(toolCall.toolCallId, target)
     errorMessage.value = toMessage(err, '恢复执行失败')
   }
 }
@@ -186,13 +192,12 @@ async function refreshThreads() {
   }
 }
 
-/** 切换会话：重指 endpoint + 用 /render 的历史替换消息列表。 */
+/** 切换会话：用 /render 的历史替换消息列表。 */
 async function selectThread(threadId: string) {
   if (!threadId) return
   activeThreadId.value = threadId
-  pendingInterrupt.value = null
+  pendingInterrupts.value.clear()
   errorMessage.value = ''
-  chatEngine.value?.updateEndpoint(chatEndpoint(threadId))
 
   try {
     const data = await renderThread(threadId)
@@ -229,7 +234,7 @@ async function removeThread(threadId: string) {
     if (activeThreadId.value !== threadId) return
 
     activeThreadId.value = ''
-    pendingInterrupt.value = null
+    pendingInterrupts.value.clear()
     chatEngine.value?.clearMessages()
     const next = threads.value[0]
     if (next) await selectThread(next.threadId)
@@ -243,7 +248,7 @@ async function handleSend(prompt: string) {
   if (!text) return
 
   // 有待审批时后端会回 409，先挡住并提示。
-  if (pendingInterrupt.value) {
+  if (pendingInterrupts.value.size > 0) {
     errorMessage.value = '有待确认的操作，请先批准或取消后再提问。'
     return
   }
@@ -279,31 +284,10 @@ function formatTime(datetime?: string): string {
   })
 }
 
-/**
- * 工具调用块判定。
- *
- * message.content 的联合类型横跨用户消息(可能带 attachment)和 AI 消息，
- * 直接把元素喂给 isToolCallContent 会因入参类型太窄而报错，这里先放宽再转交。
- */
-function isToolCall(item: unknown): boolean {
-  return isToolCallContent(item as never)
-}
-
-function toolCallData(item: unknown): ToolCall {
-  return (item as { data: ToolCall }).data
-}
-
 function toMessage(err: unknown, fallback: string): string {
   if (err instanceof Error && err.message) return err.message
   return fallback
 }
-
-/** 引擎在 onMounted 才建好，就绪后补一次 endpoint。 */
-watch(chatEngine, (instance) => {
-  if (instance && activeThreadId.value) {
-    instance.updateEndpoint(chatEndpoint(activeThreadId.value))
-  }
-})
 
 onMounted(async () => {
   await refreshThreads()
@@ -326,9 +310,6 @@ onMounted(async () => {
     <main class="panel">
       <header class="panel__head">
         <span class="panel__title">{{ activeThread?.title || '新会话' }}</span>
-        <t-tag v-if="senderLoading" size="small" theme="primary" variant="light">
-          生成中
-        </t-tag>
       </header>
 
       <t-alert
@@ -351,16 +332,21 @@ onMounted(async () => {
               :variant="messageProps[message.role]?.variant"
               allow-content-segment-custom
           >
-            <!-- 工具调用块交给 ToolCallRenderer，按 toolCallName 匹配已注册组件 -->
+            <!--
+              工具调用块交给 ToolCallRenderer，按 toolCallName 匹配已注册组件。
+              content 这里要断言一次：它的联合类型横跨用户消息(可能带 attachment)
+              和 AI 消息，而 isToolCallContent 只收 AIMessageContent。
+              工具调用只会出现在 AI 消息上，断言安全。
+            -->
             <template
-                v-for="(item, index) in message.content"
+                v-for="(item, index) in (message.content as AIMessageContent[])"
                 :key="`content-${index}`"
                 #[`${item.type}-${index}`]
             >
-              <div v-if="isToolCall(item)">
+              <div v-if="isToolCallContent(item)">
                 <ToolCallRenderer
-                    :tool-call="toolCallData(item)"
-                    @respond="onOrderRespond"
+                    :tool-call="item.data"
+                    @respond="onToolRespond"
                 />
               </div>
             </template>

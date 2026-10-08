@@ -81,12 +81,31 @@ func ListThreads(c *gin.Context) {
 	c.JSON(http.StatusOK, rows)
 }
 
-// DeleteThread 删除指定会话。DELETE /threads/:id
-func DeleteThread(c *gin.Context) {
-	id := c.Param("id")
-
+// bindThreadID 从请求体读出 threadId 并校验会话存在。
+//
+// 会话级接口的公共前置：失败时已写好响应（400/404/500），调用方直接 return。
+func bindThreadID(c *gin.Context) (string, bool) {
+	var req bo.ThreadRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请求体格式错误: " + err.Error()})
+		return "", false
+	}
+	id := strings.TrimSpace(req.ThreadID)
+	if id == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "threadId 不能为空"})
+		return "", false
+	}
 	if _, err := thread.SelectByID(id); err != nil {
 		writeThreadLookupError(c, err)
+		return "", false
+	}
+	return id, true
+}
+
+// DeleteThread 删除指定会话。POST /threads/delete
+func DeleteThread(c *gin.Context) {
+	id, ok := bindThreadID(c)
+	if !ok {
 		return
 	}
 
@@ -111,22 +130,25 @@ func DeleteThread(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
-// Chat 会话对话。POST /threads/:id/chat
+// Chat 会话对话。POST /threads/chat
 //
-// 以 AG-UI 事件流（SSE）返回。请求体二选一（见 bo.ChatRequest）：
-//   - 新一轮提问：{"prompt": "..."}
-//   - 恢复审批：{"resume": [{"interruptId": "...", "status": "resolved", "payload": true}]}
+// 以 AG-UI 事件流（SSE）返回。请求体必带 threadId，并二选一（见 bo.ChatRequest）：
+//   - 新一轮提问：{"threadId": "...", "prompt": "..."}
+//   - 恢复中断：{"threadId": "...", "resume": [{"interruptId": "...", "status": "resolved", "payload": true}]}
 //
 // 一个会话同一时刻只允许一个 run；并发请求返回 409。
 func Chat(c *gin.Context) {
-	id := c.Param("id")
-
 	var req bo.ChatRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "请求体格式错误: " + err.Error()})
 		return
 	}
 
+	id := strings.TrimSpace(req.ThreadID)
+	if id == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "threadId 不能为空"})
+		return
+	}
 	if _, err := thread.SelectByID(id); err != nil {
 		writeThreadLookupError(c, err)
 		return
@@ -273,14 +295,12 @@ func logExit(threadID, runID string, state *adk.TurnLoopExitState[*turnloop.Chat
 	log.Printf("[thread] run 正常结束 thread=%s run=%s", threadID, runID)
 }
 
-// Render 渲染会话历史。GET /threads/:id/render
+// Render 渲染会话历史。POST /threads/render
 //
 // 返回 AG-UI 的消息数组，供前端 AGUIAdapter.convertHistoryMessages 还原气泡。
 func Render(c *gin.Context) {
-	id := c.Param("id")
-
-	if _, err := thread.SelectByID(id); err != nil {
-		writeThreadLookupError(c, err)
+	id, ok := bindThreadID(c)
+	if !ok {
 		return
 	}
 
@@ -305,12 +325,10 @@ func Render(c *gin.Context) {
 	})
 }
 
-// Abort 终止当前会话的运行。POST /threads/:id/abort
+// Abort 终止当前会话的运行。POST /threads/abort
 func Abort(c *gin.Context) {
-	id := c.Param("id")
-
-	if _, err := thread.SelectByID(id); err != nil {
-		writeThreadLookupError(c, err)
+	id, ok := bindThreadID(c)
+	if !ok {
 		return
 	}
 
@@ -324,12 +342,17 @@ func Abort(c *gin.Context) {
 // maxUploadBytes 单个上传文件的大小上限。
 const maxUploadBytes = 20 << 20 // 20 MiB
 
-// Upload 上传文档到会话工作区。POST /threads/:id/docs
+// Upload 上传文档到会话工作区。POST /threads/docs
 //
-// 表单字段名为 file。返回的 url 可直接填进下一次 /chat 的 attachments。
+// multipart 表单：threadId 为会话 ID，file 为文件内容。
+// 这里 threadId 走表单而非 JSON body——multipart 请求没法再带 JSON。
+// 返回的 url 可直接填进下一次 /chat 的 attachments。
 func Upload(c *gin.Context) {
-	id := c.Param("id")
-
+	id := strings.TrimSpace(c.PostForm("threadId"))
+	if id == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "threadId 不能为空"})
+		return
+	}
 	if _, err := thread.SelectByID(id); err != nil {
 		writeThreadLookupError(c, err)
 		return
@@ -363,10 +386,12 @@ func Upload(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"name":       fh.Filename,
-		"size":       fh.Size,
-		"extension":  strings.TrimPrefix(ext, "."),
-		"url":        "/threads/" + id + "/docs/" + stored,
+		"name":      fh.Filename,
+		"size":      fh.Size,
+		"extension": strings.TrimPrefix(ext, "."),
+		// TODO: 当前没有任何路由会 GET 这个地址（改路由前就是如此），
+		// 下载能力待补：挂一个静态文件路由或对象存储直链。
+		"url":        "/threads/docs/" + id + "/" + stored,
 		"uploadedAt": time.Now().UTC().Format(time.RFC3339),
 	})
 }

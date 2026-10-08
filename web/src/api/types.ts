@@ -46,8 +46,13 @@ export interface AttachmentItem {
     metadata?: Record<string, unknown>
 }
 
-/** POST /threads/:id/chat 的请求体。prompt 与 resume 互斥。 */
+/**
+ * POST /api/threads/chat 的请求体。
+ *
+ * threadId 必填；prompt 与 resume 互斥(一次请求只做一件事)。
+ */
 export interface ChatRequestBody {
+    threadId: string
     prompt?: string
     messageID?: string
     attachments?: AttachmentItem[]
@@ -70,7 +75,7 @@ export interface AGUIHistoryMessage {
     [key: string]: unknown
 }
 
-/** GET /threads/:id/render 的返回体。 */
+/** POST /api/threads/render 的返回体。 */
 export interface RenderResponse {
     threadId: string
     messages: AGUIHistoryMessage[]
@@ -79,13 +84,13 @@ export interface RenderResponse {
     running: boolean
 }
 
-/** POST /threads/:id/abort 的返回体。 */
+/** POST /api/threads/abort 的返回体。 */
 export interface AbortResponse {
     aborted: boolean
     message?: string
 }
 
-/** POST /threads/:id/docs 的返回体。 */
+/** POST /api/threads/docs 的返回体。 */
 export interface UploadResponse {
     name: string
     size: number
@@ -98,8 +103,12 @@ export interface UploadResponse {
  * 一个待用户确认的中断。
  *
  * 来自 RUN_FINISHED 事件的 `outcome.interrupts[]`(ag-ui Go SDK 的
- * WithInterruptOutcome 写入)，前端读到后渲染审批卡片，批准/拒绝时
- * 把 `id` 原样回填到 ResumeEntry.interruptId。
+ * WithInterruptOutcome 写入)，批准/拒绝时把 `id` 原样回填到
+ * ResumeEntry.interruptId。
+ *
+ * toolCallId 由后端从中断地址里的 tool 段解析而来，指向触发这次中断的
+ * tool call。前端据此把中断关联回对应的 tool call 块，复用该工具已注册的
+ * 渲染组件——这样新增需要审批的工具时，前端不需要任何改动。
  */
 export interface AGUIInterrupt {
     id: string

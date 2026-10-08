@@ -18,9 +18,13 @@ func InitRouter() *gin.Engine {
 	return r
 }
 
-// RegisterRoutes 挂载业务路由。路由直接挂在根组下，不带 /api 前缀(CLAUDE.md 约定)。
+// RegisterRoutes 挂载业务路由。
 //
-// 会话相关接口当前为空返回占位，待 loop 包重写后接入实际逻辑。
+// 路由不带 /api 前缀：开发期由 vite 代理 rewrite 掉（见 web/vite.config.ts），
+// 生产由网关负责，后端只认裸路径。
+//
+// 会话级接口统一用 POST + 请求体里的 threadId，不走 URL 路径参数——
+// 前端切会话时只改 body，SSE endpoint 保持静态。
 func RegisterRoutes(r *gin.Engine) {
 	// 健康检查
 	r.GET("/health", healthHandler.Health)
@@ -28,11 +32,11 @@ func RegisterRoutes(r *gin.Engine) {
 	// 会话管理
 	r.POST("/threads", threadHandler.CreateThread)
 	r.GET("/threads", threadHandler.ListThreads)
-	r.DELETE("/threads/:id", threadHandler.DeleteThread)
+	r.POST("/threads/delete", threadHandler.DeleteThread)
 
 	// 会话交互
-	r.POST("/threads/:id/chat", threadHandler.Chat)
-	r.GET("/threads/:id/render", threadHandler.Render)
-	r.POST("/threads/:id/abort", threadHandler.Abort)
-	r.POST("/threads/:id/docs", threadHandler.Upload)
+	r.POST("/threads/chat", threadHandler.Chat)
+	r.POST("/threads/render", threadHandler.Render)
+	r.POST("/threads/abort", threadHandler.Abort)
+	r.POST("/threads/docs", threadHandler.Upload)
 }

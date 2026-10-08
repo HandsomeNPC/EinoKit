@@ -3,6 +3,15 @@ package bo
 
 import "github.com/ag-ui-protocol/ag-ui/sdks/community/go/pkg/core/types"
 
+// ThreadRequest 是所有会话级接口的公共请求体。
+//
+// threadId 走请求体而非 URL 路径：前端切换会话时只换 body 字段，
+// 不必重建 SSE endpoint（ChatEngine 的 endpoint 在 init 时求值，
+// 改路径就得 updateEndpoint，还要处理竞态）。
+type ThreadRequest struct {
+	ThreadID string `json:"threadId"`
+}
+
 // ChatRequest 是对话接口的请求体。
 //
 // 一次请求只做一件事，二者互斥：
@@ -12,7 +21,10 @@ import "github.com/ag-ui-protocol/ag-ui/sdks/community/go/pkg/core/types"
 // Resume 直接复用 AG-UI 协议的 ResumeEntry，与前端 AGUIAdapter 同源，
 // 批准为 {"interruptId":"...","status":"resolved","payload":true}，
 // 拒绝为 {"interruptId":"...","status":"cancelled"}。
+// 这是本项目唯一的中断恢复通道——任何工具的任何中断都走它，
+// 工具自身的业务语义只体现在 Payload 里，不影响传输格式。
 type ChatRequest struct {
+	ThreadRequest
 	TDesignChatRequestParams
 	Resume []types.ResumeEntry `json:"resume,omitempty"`
 }

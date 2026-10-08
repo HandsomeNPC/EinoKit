@@ -6,19 +6,26 @@ EinoKit 是一个 AI 脚手架项目:后端基于 [Eino](https://github.com/clou
 
 ```
 EinoKit/
-├── server/      # Go 后端 (Eino + ADK + AG-UI SDK),目前为空,待初始化 go mod
-├── web/         # Vue 3 + TS + Vite 前端,待引入 TDesign
+├── server/      # Go 后端 (Eino + ADK + AG-UI SDK)
+│   ├── cmd/main.go
+│   └── internal/
+│       ├── agents/      # Agent 注册表与 demo agent
+│       ├── agui/        # AG-UI 事件发射器与历史渲染
+│       ├── handler/     # gin handler (health / thread)
+│       ├── memory/      # 会话与消息存储 (GORM)
+│       ├── msgops/      # AgenticMessage 归一化/抽取
+│       ├── turnloop/    # ADK TurnLoop 封装、中断映射
+│       └── tools/       # 示例工具 (order_milk_tea)
+├── web/         # Vue 3 + TS + Vite + TDesign 前端
 └── CLAUDE.md
 ```
-
-> 当前为空脚手架,无任何提交。下面的命令与约定是**目标基线**,初始化时按此执行。
 
 ## 开发命令
 
 ### 前端 (`web/`)
 ```powershell
 cd web
-npm install        # 安装依赖(需补装:tdesign-vue-next、tdesign-icons-vue-next)
+npm install
 npm run dev       # vite dev,默认 http://localhost:5173
 npm run build     # vue-tsc -b && vite build
 npm run preview
@@ -27,16 +34,49 @@ npm run preview
 ### 后端 (`server/`)
 ```powershell
 cd server
-go mod init github.com/Platform/EinoKit      # 初始化(路径以实际为准)
 go mod tidy
-go run ./cmd/server                            # 或 make run,默认 :8080
+go run ./cmd           # 默认 :8080
 go test ./...
+go build ./...
 ```
+
+## HTTP 接口约定
+
+后端路由是**裸路径**,不带 `/api` 前缀。前端统一请求 `/api/*`,开发期由
+`web/vite.config.ts` 的代理 rewrite 掉前缀,生产由网关承担。
+
+会话级接口统一 **POST + 请求体里的 `threadId`**,不用 URL 路径参数——
+这样 SSE endpoint 是静态常量,前端切会话只改 body,不必 `updateEndpoint`
+(改 endpoint 还要处理引擎只在 init 求值一次配置带来的竞态)。
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET  | `/health` | 健康检查 |
+| POST | `/threads` | 创建会话 |
+| GET  | `/threads` | 列出会话 |
+| POST | `/threads/delete` | 删除会话 |
+| POST | `/threads/chat` | 对话(SSE,AG-UI 事件流) |
+| POST | `/threads/render` | 渲染会话历史 |
+| POST | `/threads/abort` | 终止当前运行 |
+| POST | `/threads/docs` | 上传文档(multipart,`threadId` 走表单字段) |
+
+### 中断恢复(Human-in-the-Loop)
+
+**所有**中断都走同一条通道,与具体是哪个工具无关:
+
+- 后端在 `RUN_FINISHED.outcome.interrupts[]` 里给出 `{id, toolCallId, message}`。
+  `toolCallId` 由 `turnloop.toolCallIDOf` 从 ADK 中断地址的 `tool` 段解析
+  (取 `SubID`,因为 compose 把工具名放 `ID`、call ID 放 `SubID`)。
+- 前端按 `toolCallId` 把中断关联回 tool call 块,复用该工具已注册的渲染组件。
+- 恢复时发 `POST /threads/chat` 带 `{threadId, resume:[types.ResumeEntry]}`,
+  即 AG-UI 协议的 `ResumeEntry`(见 `internal/model/bo.ChatRequest`)。
+
+新增需要审批的工具时,只需注册一个渲染组件,前后端的中断传递链路都不用改。
 
 ## 技术栈基线
 
-- **后端**:Go + Eino (`github.com/cloudwego/eino` 含 `/adk` 子包) + AG-UI SDK。AG-UI Go SDK 用 go.mod `replace` 指向本地 `E:/WorkSpace/ag-ui-main/sdks/community/go`(本地开发期,提交前确认是否还需 replace)。Store:PostgreSQL 生产 / 本地原型用 JSONL 文件(`internal/msgops` + `mem` 包)。
-- **前端**:Vue 3 `<script setup>` + TypeScript + Vite + TDesign Vue Next (`tdesign-vue-next`)。AG-UI 客户端走 ChatEngine + AGUIAdapter。
+- **后端**:Go + Eino (`github.com/cloudwego/eino` 含 `/adk` 子包) + AG-UI Go SDK(走正常 go.mod 依赖,无 `replace`)。模块路径 `github.com/HandsomeNPC/EinoKit`。Store:PostgreSQL(GORM,见 `internal/memory`);checkpoint 走 Redis(`internal/checkpoint`)。
+- **前端**:Vue 3 `<script setup>` + TypeScript + Vite + TDesign Vue Next (`tdesign-vue-next`) + `@tdesign-vue-next/chat`。AG-UI 客户端走 ChatEngine + AGUIAdapter。
 - **模型**:按 Claude Code 环境提示,构建 AI 应用默认用最新最强 Claude 模型(Opus/Sonnet/Haiku)。后端 Eino 的 Model 调用按业务自选 provider,不在脚手架强绑定。
 
 ### Eino 使用指引:优先调用 skill
@@ -61,6 +101,6 @@ go test ./...
 
 ## Git
 
-- 主分支 `main`,开发在 `master` 或特性分支。提交前不要 `--no-verify` 跳 hook。
+- 主分支 `master`(远端只有 `origin/master`,没有 `main`),开发在 `master` 或特性分支。提交前不要 `--no-verify` 跳 hook。
 - 远端:`codeup.aliyun.com/.../Platform/EinoKit.git`。
-- `server/einoit.db`、`.idea/`、`node_modules/`、`dist/` 不入库。
+- `.idea/`、`node_modules/`、`dist/` 不入库。

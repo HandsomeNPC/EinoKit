@@ -1,8 +1,11 @@
 /**
  * 后端 REST 接口封装。
  *
- * 只覆盖非流式接口：对话流(POST /threads/:id/chat)由 ChatEngine 的 SSE
- * 通道直接接管(见 src/chat/service.ts)，不在这里重复实现。
+ * 只覆盖非流式接口：对话流(POST /api/threads/chat)由 ChatEngine 的 SSE
+ * 通道直接接管，不在这里重复实现。
+ *
+ * 所有会话级接口都是 POST + 请求体里的 threadId，不走 URL 路径参数——
+ * 这样 SSE endpoint 是静态的，切会话时不必 updateEndpoint。
  */
 import type {
     AbortResponse,
@@ -26,6 +29,9 @@ export class ApiError extends Error {
         this.status = status
     }
 }
+
+/** 后端基址。开发期由 vite 代理 rewrite 掉 /api，生产由网关承担。 */
+const BASE = '/api'
 
 /**
  * 发起请求并解析 JSON。
@@ -52,62 +58,66 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     return (await resp.json()) as T
 }
 
-const JSON_HEADERS = {'Content-Type': 'application/json'}
+/** POST JSON 的快捷方式——会话级接口清一色是这个形状。 */
+function post<T>(path: string, body: unknown): Promise<T> {
+    return request<T>(`${BASE}${path}`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body),
+    })
+}
 
 /** 创建会话。两个入参都可省略：标题留空由首轮提问回填。 */
 export function createThread(params?: {
     title?: string
     agentType?: string
 }): Promise<ThreadInfo> {
-    return request<ThreadInfo>('/threads', {
-        method: 'POST',
-        headers: JSON_HEADERS,
-        body: JSON.stringify(params ?? {}),
-    })
+    return post<ThreadInfo>('/threads', params ?? {})
 }
 
 /** 列出全部会话。 */
 export function listThreads(): Promise<ThreadInfo[]> {
-    return request<ThreadInfo[]>('/threads')
+    return request<ThreadInfo[]>(`${BASE}/threads`)
 }
 
 /** 删除会话。后端返回 204，无响应体。 */
 export function deleteThread(threadId: string): Promise<void> {
-    return request<void>(`/threads/${encodeURIComponent(threadId)}`, {
-        method: 'DELETE',
-    })
+    return post<void>('/threads/delete', {threadId})
 }
 
 /** 渲染会话历史(含待审批状态与运行状态)。 */
 export function renderThread(threadId: string): Promise<RenderResponse> {
-    return request<RenderResponse>(
-        `/threads/${encodeURIComponent(threadId)}/render`,
-    )
+    return post<RenderResponse>('/threads/render', {threadId})
 }
 
 /** 终止会话当前运行。 */
 export function abortThread(threadId: string): Promise<AbortResponse> {
-    return request<AbortResponse>(
-        `/threads/${encodeURIComponent(threadId)}/abort`,
-        {method: 'POST'},
-    )
+    return post<AbortResponse>('/threads/abort', {threadId})
 }
 
-/** 上传文档到会话工作区。表单字段名必须是 file(后端 c.FormFile("file"))。 */
+/**
+ * 上传文档到会话工作区。
+ *
+ * multipart 请求没法再带 JSON body，所以 threadId 走表单字段；
+ * 文件字段名必须是 file(后端 c.FormFile("file"))。
+ */
 export function uploadDoc(
     threadId: string,
     file: File,
 ): Promise<UploadResponse> {
     const form = new FormData()
+    form.append('threadId', threadId)
     form.append('file', file)
     // 不手写 Content-Type：浏览器要自己补 multipart 的 boundary。
-    return request<UploadResponse>(
-        `/threads/${encodeURIComponent(threadId)}/docs`,
-        {method: 'POST', body: form},
-    )
+    return request<UploadResponse>(`${BASE}/threads/docs`, {
+        method: 'POST',
+        body: form,
+    })
 }
 
-/** 对话流地址。交给 ChatEngine 作为 SSE endpoint。 */
-export function chatEndpoint(threadId: string): string {
-    return `/threads/${encodeURIComponent(threadId)}/chat`
-}
+/**
+ * 对话流地址。交给 ChatEngine 作为 SSE endpoint。
+ *
+ * 是个常量：threadId 走请求体，切会话不需要换 endpoint。
+ */
+export const CHAT_ENDPOINT = `${BASE}/threads/chat`
