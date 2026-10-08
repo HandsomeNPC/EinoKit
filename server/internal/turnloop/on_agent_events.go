@@ -58,6 +58,7 @@ func makeOnAgentEvents(threadID, runID string, emitter *agui.Emitter) func(ctx c
 					markBroken()
 				}
 				flushPending(threadID, runID, &pending)
+				clearPendingInterrupt(threadID)
 				return event.Err
 			}
 
@@ -70,6 +71,9 @@ func makeOnAgentEvents(threadID, runID string, emitter *agui.Emitter) func(ctx c
 					markBroken()
 				}
 				flushPending(threadID, runID, &pending)
+				// 落库中断详情:前端刷新后靠它恢复审批卡片,resume 时后端也
+				// 靠它查出 interruptId,不信任客户端传入的值。
+				savePendingInterrupt(threadID, interrupts)
 				return errInterrupted
 			}
 
@@ -102,11 +106,39 @@ func makeOnAgentEvents(threadID, runID string, emitter *agui.Emitter) func(ctx c
 			}
 		}
 		flushPending(threadID, runID, &pending)
+		// 跑到这里说明本轮没有中断(正常 Exit 或事件流耗尽),清掉上一轮可能
+		// 残留的快照——resume 成功收尾走的正是这条路径。
+		clearPendingInterrupt(threadID)
 		if !writerBroken {
 			emitter.RunFinishedSuccess()
 			markBroken()
 		}
 		return nil
+	}
+}
+
+// savePendingInterrupt 把本轮产生的中断落库,供 /render 恢复审批卡片与
+// resume 时反查 interruptId。失败只记日志:中断本身已经通过 SSE 发给前端,
+// 落库失败最多让"刷新后恢复"这一个增强功能失效,不该让整轮对话失败。
+func savePendingInterrupt(threadID string, interrupts []types.Interrupt) {
+	if len(interrupts) == 0 {
+		return
+	}
+	payload, err := json.Marshal(interrupts)
+	if err != nil {
+		log.Printf("warn: marshal pending interrupt failed thread=%s: %v", threadID, err)
+		return
+	}
+	if err := thread.SavePendingInterrupt(threadID, payload); err != nil {
+		log.Printf("warn: persist pending interrupt failed thread=%s: %v", threadID, err)
+	}
+}
+
+// clearPendingInterrupt 清掉会话的中断快照。在所有"非中断"的收尾路径调用,
+// 保证快照不会比它描述的那次中断活得更久。
+func clearPendingInterrupt(threadID string) {
+	if err := thread.ClearPendingInterrupt(threadID); err != nil {
+		log.Printf("warn: clear pending interrupt failed thread=%s: %v", threadID, err)
 	}
 }
 

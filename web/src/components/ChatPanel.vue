@@ -7,7 +7,8 @@
  *
  * 与 TDesign demo 的唯一差异在 respond 的回传路径：demo 用 toolCallMessage
  * 走 sendAIMessage，而本项目后端是 AG-UI 原生 interrupt，恢复时要的是
- * `{resume:[{interruptId,...}]}`，所以走 resumeRun(见 onToolRespond)。
+ * `{resume:[{status,payload}]}`，所以走 resumeRun(见 onToolRespond)。
+ * 不带 interruptId —— 它由后端从自己落库的中断快照回填。
  */
 import {computed, onMounted, ref} from 'vue'
 import {
@@ -45,9 +46,11 @@ const inputValue = ref('')
  * 待确认的中断，按 toolCallId 索引。
  *
  * 后端在 RUN_FINISHED 的 `outcome.interrupts[]` 里带上触发中断的 toolCallId
- * (从 ADK 的中断地址解析)，所以这里能把中断关联回具体的 tool call 块——
- * respond 回调拿到 toolCall 就能反查出该回填哪个 interruptId。
- * 这条链路与具体是哪个工具无关，新增需要审批的工具不必改这里。
+ * (从 ADK 的中断地址解析)，并把同样的快照落库，所以两个来源都能填这张表：
+ * 本轮对话走 onComplete，切会话/刷新页面走 /render(见 selectThread)。
+ *
+ * 这里只用于"卡片该不该可点"的本地判断——真正的 interruptId 由后端持有，
+ * resume 时不需要前端回传。整条链路与具体是哪个工具无关。
  */
 const pendingInterrupts = ref(new Map<string, AGUIInterrupt>())
 
@@ -107,9 +110,7 @@ const {chatEngine, messages, status} = useChat({
     // 所以 Go SDK 写的 outcome.interrupts 能完整读到。
     onComplete: (isAborted, _params, result) => {
       if (isAborted) return
-      for (const it of extractInterrupts(result)) {
-        if (it.toolCallId) pendingInterrupts.value.set(it.toolCallId, it)
-      }
+      rememberInterrupts(extractInterrupts(result))
     },
 
     // 断开 SSE 不会让后端的 run 停下，必须显式调 /abort。
@@ -155,16 +156,17 @@ function extractInterrupts(result: unknown): AGUIInterrupt[] {
 /**
  * 工具卡片的 respond 回调。
  *
- * 对任意工具通用：用 toolCallId 反查出对应的中断，把用户的回传值作为
- * resume payload 发回后端。约定 `response === false` 表示取消
- * (审批类卡片回传布尔值)，其余一律视为已解决，response 原样作为 payload，
- * 这样需要结构化回执的工具(如表单)不必改动这里。
+ * 对任意工具通用：用 toolCallId 确认该中断仍待处理，然后把用户的回传值作为
+ * resume payload 发回后端。约定 `response === false` 表示取消（审批类卡片回传
+ * 布尔值），其余一律视为已解决，response 原样作为 payload，这样需要结构化回执
+ * 的工具（如表单）不必改动这里。
+ *
+ * 不传 interruptId —— 后端用自己记录的中断快照回填（见 buildChatItem）。
  */
 async function onToolRespond(toolCall: ToolCall, response: unknown) {
   const target = pendingInterrupts.value.get(toolCall.toolCallId)
   if (!target) {
-    // 刷新页面后拿不到 interruptId(/render 只给布尔标记)，无法恢复。
-    errorMessage.value = '审批信息已失效（页面刷新过），请重新提问。'
+    errorMessage.value = '该操作已处理或已失效，请重新提问。'
     return
   }
 
@@ -174,8 +176,8 @@ async function onToolRespond(toolCall: ToolCall, response: unknown) {
     await chatEngine.value?.resumeRun({
       resume: [
         response === false
-            ? {interruptId: target.id, status: 'cancelled'}
-            : {interruptId: target.id, status: 'resolved', payload: response},
+            ? {status: 'cancelled'}
+            : {status: 'resolved', payload: response},
       ],
     } as ChatRequestParams)
   } catch (err) {
@@ -192,7 +194,7 @@ async function refreshThreads() {
   }
 }
 
-/** 切换会话：用 /render 的历史替换消息列表。 */
+/** 切换会话：用 /render 的历史替换消息列表，并恢复待审批状态。 */
 async function selectThread(threadId: string) {
   if (!threadId) return
   activeThreadId.value = threadId
@@ -207,10 +209,20 @@ async function selectThread(threadId: string) {
         AGUIAdapter.convertHistoryMessages(data.messages as never),
         'replace',
     )
+    // 恢复待审批状态：后端只在 checkpoint 仍有效时才返回 interrupts，
+    // 所以这里恢复出来的卡片点下去一定能 resume（刷新页面也不例外）。
+    rememberInterrupts(data.interrupts)
   } catch (err) {
     if (activeThreadId.value === threadId) {
       errorMessage.value = toMessage(err, '加载会话历史失败')
     }
+  }
+}
+
+/** 按 toolCallId 收录中断，供 respond 时核对。无 toolCallId 的无法关联卡片，跳过。 */
+function rememberInterrupts(interrupts: AGUIInterrupt[] | undefined) {
+  for (const it of interrupts ?? []) {
+    if (it?.toolCallId) pendingInterrupts.value.set(it.toolCallId, it)
   }
 }
 

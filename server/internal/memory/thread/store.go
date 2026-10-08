@@ -74,6 +74,44 @@ func UpdateTitle(id, title string) error {
 	return nil
 }
 
+// SavePendingInterrupt 记录会话待确认的中断快照。
+//
+// payload 为 AG-UI []types.Interrupt 的 JSON 数组，由调用方 marshal。
+// 传 nil / 空切片等同于 ClearPendingInterrupt。
+func SavePendingInterrupt(id string, payload []byte) error {
+	if id == "" {
+		return fmt.Errorf("thread: 会话主键为空")
+	}
+	if len(payload) == 0 {
+		return ClearPendingInterrupt(id)
+	}
+	res := database.GetInstance().WithContext(context.Background()).Model(&ThreadInfo{}).
+		Where("thread_id = ?", id).Update("pending_interrupt", payload)
+	if res.Error != nil {
+		return fmt.Errorf("thread: 保存待确认中断 id=%s 失败: %w", id, res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return ErrThreadNotFound
+	}
+	return nil
+}
+
+// ClearPendingInterrupt 清掉会话的待确认中断快照。
+//
+// 会话已被删除时返回 nil 而不是 ErrThreadNotFound：清理是幂等操作，
+// 调用方（run 收尾、abort）只想保证"最终没有残留"，不关心行还在不在。
+func ClearPendingInterrupt(id string) error {
+	if id == "" {
+		return fmt.Errorf("thread: 会话主键为空")
+	}
+	err := database.GetInstance().WithContext(context.Background()).Model(&ThreadInfo{}).
+		Where("thread_id = ?", id).Update("pending_interrupt", nil).Error
+	if err != nil {
+		return fmt.Errorf("thread: 清除待确认中断 id=%s 失败: %w", id, err)
+	}
+	return nil
+}
+
 // DeleteByID 删除会话及其全部消息，两步同事务以免留下孤儿消息。
 // 表无外键约束（迁移期禁用），故级联删除由本方法显式完成。
 func DeleteByID(id string) error {

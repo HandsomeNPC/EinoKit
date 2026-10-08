@@ -64,6 +64,9 @@ func Abort(threadID string) bool {
 		adk.WithSkipCheckpoint(),
 		adk.WithStopCause("aborted by user"),
 	)
+	// 快照跟着 checkpoint 一起作废：WithSkipCheckpoint 会连带删掉 runner 快照，
+	// 中断详情若留着就会让前端显示一张永远无法恢复的审批卡片。
+	clearPendingInterrupt(threadID)
 	return true
 }
 

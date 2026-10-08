@@ -3,6 +3,7 @@ package thread
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -134,7 +135,10 @@ func DeleteThread(c *gin.Context) {
 //
 // 以 AG-UI 事件流（SSE）返回。请求体必带 threadId，并二选一（见 bo.ChatRequest）：
 //   - 新一轮提问：{"threadId": "...", "prompt": "..."}
-//   - 恢复中断：{"threadId": "...", "resume": [{"interruptId": "...", "status": "resolved", "payload": true}]}
+//   - 恢复中断：{"threadId": "...", "resume": [{"status": "resolved", "payload": true}]}
+//
+// resume 的 interruptId 可以省略：后端用 thread_info 里的中断快照回填
+// （见 buildChatItem）。客户端传了也以服务端快照为准。
 //
 // 一个会话同一时刻只允许一个 run；并发请求返回 409。
 func Chat(c *gin.Context) {
@@ -149,25 +153,22 @@ func Chat(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "threadId 不能为空"})
 		return
 	}
-	if _, err := thread.SelectByID(id); err != nil {
+	info, err := thread.SelectByID(id)
+	if err != nil {
 		writeThreadLookupError(c, err)
 		return
 	}
 
-	item, err := buildChatItem(&req)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	// 快照是否存在 == 是否有待确认的审批：干净跑完和主动终止都会删掉快照
+	// 以 checkpoint 为准判断有没有待确认的审批：干净跑完和主动终止都会删掉快照
 	// （见 turnloop.Abort 的 WithSkipCheckpoint 说明），所以两者不会混淆。
-	pending, err := hasPendingInterrupt(c.Request.Context(), id)
+	// interrupts 则是中断详情，resume 时用来回填 interruptId。
+	interrupts, err := loadPendingInterrupts(c.Request.Context(), id, info)
 	if err != nil {
-		log.Printf("[thread] 读取 checkpoint 失败 thread=%s: %v", id, err)
+		log.Printf("[thread] 读取会话状态失败 thread=%s: %v", id, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "读取会话状态失败"})
 		return
 	}
+	pending := len(interrupts) > 0
 	switch {
 	case req.IsResume() && !pending:
 		c.JSON(http.StatusConflict, gin.H{"error": "当前没有待确认的操作，无法恢复"})
@@ -176,6 +177,12 @@ func Chat(c *gin.Context) {
 		// 不能直接丢掉新 prompt 去跑 resume：TurnLoop 读到带 runner 状态的快照
 		// 就会走 GenResume，新输入会被静默忽略。明确要求先解决审批。
 		c.JSON(http.StatusConflict, gin.H{"error": "有待确认的操作，请先批准或取消后再提问"})
+		return
+	}
+
+	item, err := buildChatItem(&req, interrupts)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -231,16 +238,19 @@ func maybeBackfillTitle(threadID, query string) {
 }
 
 // buildChatItem 把请求体翻译成 TurnLoop 的队列条目。
-func buildChatItem(req *bo.ChatRequest) (*turnloop.ChatItem, error) {
+//
+// interrupts 是服务端记录的待确认中断（resume 路径下必非空，调用方已校验）。
+func buildChatItem(req *bo.ChatRequest, interrupts []types.Interrupt) (*turnloop.ChatItem, error) {
 	if req.IsResume() {
 		// 一次只恢复一个中断点：当前 agent 只会产生单个根因中断
 		// （见 turnloop.toAGUIInterrupts 的取值策略）。
+		//
+		// interruptId 取服务端快照而非客户端传入值：前者是 ADK 认的那个 ID，
+		// 后者可能过期（页面停留期间 run 已被别的请求恢复）或被伪造。
+		// 客户端只需要表达"批准还是拒绝"。
 		entry := req.Resume[0]
-		if strings.TrimSpace(entry.InterruptID) == "" {
-			return nil, errors.New("resume[0].interruptId 不能为空")
-		}
 		return &turnloop.ChatItem{
-			InterruptID:      entry.InterruptID,
+			InterruptID:      interrupts[0].ID,
 			InterruptContent: resumeDecision(entry),
 		}, nil
 	}
@@ -278,6 +288,31 @@ func hasPendingInterrupt(ctx context.Context, threadID string) (bool, error) {
 	return existed, nil
 }
 
+// loadPendingInterrupts 读出会话待确认的中断详情。
+//
+// 以 checkpoint 为准：checkpoint 不在就一律视为"无待确认中断"，即使
+// thread_info 里还留着快照。两者本该同生同死，但 checkpoint 可能配了 TTL
+// 过期、或 Redis 被清空，此时那条中断已经不可能 resume 了——返回它只会让
+// 前端显示一张点了就报错的审批卡片。info 为 nil 时只做存在性判断。
+func loadPendingInterrupts(ctx context.Context, threadID string, info *thread.ThreadInfo) ([]types.Interrupt, error) {
+	pending, err := hasPendingInterrupt(ctx, threadID)
+	if err != nil {
+		return nil, err
+	}
+	if !pending || info == nil || len(info.PendingInterrupt) == 0 {
+		return nil, nil
+	}
+
+	var interrupts []types.Interrupt
+	if uErr := json.Unmarshal(info.PendingInterrupt, &interrupts); uErr != nil {
+		// 快照坏了不该让接口挂掉：checkpoint 还在，用户仍可通过
+		// 前端 SSE 里拿到的 interruptId 恢复。
+		log.Printf("warn: 解析中断快照失败 thread=%s: %v", threadID, uErr)
+		return nil, nil
+	}
+	return interrupts, nil
+}
+
 // logExit 把 loop 退出原因落日志。中断退出是预期路径，不记为错误。
 func logExit(threadID, runID string, state *adk.TurnLoopExitState[*turnloop.ChatItem, *schema.AgenticMessage]) {
 	if state == nil {
@@ -298,9 +333,23 @@ func logExit(threadID, runID string, state *adk.TurnLoopExitState[*turnloop.Chat
 // Render 渲染会话历史。POST /threads/render
 //
 // 返回 AG-UI 的消息数组，供前端 AGUIAdapter.convertHistoryMessages 还原气泡。
+// 有待确认中断时连同中断详情一起返回，前端据此把审批卡片恢复出来——
+// 这样刷新页面不会丢掉待审批状态。
 func Render(c *gin.Context) {
-	id, ok := bindThreadID(c)
-	if !ok {
+	var req bo.ThreadRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请求体格式错误: " + err.Error()})
+		return
+	}
+	id := strings.TrimSpace(req.ThreadID)
+	if id == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "threadId 不能为空"})
+		return
+	}
+	// 整行读出来：下面要用 info.PendingInterrupt。
+	info, err := thread.SelectByID(id)
+	if err != nil {
+		writeThreadLookupError(c, err)
 		return
 	}
 
@@ -311,16 +360,22 @@ func Render(c *gin.Context) {
 		return
 	}
 
-	pending, err := hasPendingInterrupt(c.Request.Context(), id)
+	interrupts, err := loadPendingInterrupts(c.Request.Context(), id, info)
 	if err != nil {
 		// 历史已经读到了，待审批状态读失败不该让整个接口挂掉。
-		log.Printf("warn: 读取 checkpoint 失败 thread=%s: %v", id, err)
+		log.Printf("warn: 读取待确认中断失败 thread=%s: %v", id, err)
+	}
+	// 显式兜空切片，保证 JSON 是 [] 而不是 null。
+	if interrupts == nil {
+		interrupts = []types.Interrupt{}
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"threadId":        id,
-		"messages":        msgs,
-		"pendingApproval": pending,
+		"threadId": id,
+		"messages": msgs,
+		// pendingApproval 保留为便捷布尔，与 interrupts 非空等价。
+		"pendingApproval": len(interrupts) > 0,
+		"interrupts":      interrupts,
 		"running":         turnloop.IsRunning(id),
 	})
 }

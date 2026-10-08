@@ -64,12 +64,21 @@ go build ./...
 
 **所有**中断都走同一条通道,与具体是哪个工具无关:
 
-- 后端在 `RUN_FINISHED.outcome.interrupts[]` 里给出 `{id, toolCallId, message}`。
+- 后端在 `RUN_FINISHED.outcome.interrupts[]` 里给出 `{id, toolCallId, message}`,
+  **同时**把这份快照落库到 `thread_info.pending_interrupt`。
   `toolCallId` 由 `turnloop.toolCallIDOf` 从 ADK 中断地址的 `tool` 段解析
   (取 `SubID`,因为 compose 把工具名放 `ID`、call ID 放 `SubID`)。
 - 前端按 `toolCallId` 把中断关联回 tool call 块,复用该工具已注册的渲染组件。
-- 恢复时发 `POST /threads/chat` 带 `{threadId, resume:[types.ResumeEntry]}`,
-  即 AG-UI 协议的 `ResumeEntry`(见 `internal/model/bo.ChatRequest`)。
+  刷新页面后 `/threads/render` 会带回 `interrupts`,审批卡片照样能恢复。
+- 恢复时发 `POST /threads/chat` 带 `{threadId, resume:[{status, payload}]}`。
+  **`interruptId` 不由前端传**——后端从自己的快照里取(`buildChatItem`),
+  客户端只表达"批准还是拒绝"。传入值一概忽略,避免过期或伪造的 ID。
+
+两处状态的权威关系:Redis 里的 **checkpoint 是唯一权威**(它才让 ADK 真的能
+resume),`thread_info.pending_interrupt` 只是展示/回填用的副本。
+`loadPendingInterrupts` 先查 checkpoint,不在就一律当作无待确认中断——
+否则 checkpoint 过期(TTL)或 Redis 被清后,前端会显示一张点了就报错的卡片。
+所有"非中断"的收尾路径(正常结束、出错、`/abort`)都会清掉这份副本。
 
 新增需要审批的工具时,只需注册一个渲染组件,前后端的中断传递链路都不用改。
 

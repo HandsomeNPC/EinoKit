@@ -21,13 +21,15 @@ export interface ThreadInfo {
  * 中断恢复条目。对齐 ag-ui 的 ResumeEntry：
  * 批准 `{ status: 'resolved', payload: true }`，拒绝 `{ status: 'cancelled' }`。
  *
+ * interruptId 由后端用 thread_info 里的中断快照回填，前端不必传——
+ * 服务端只认自己记录的那个 ID，客户端传了也会被忽略。
+ *
  * 后端 resumeDecision 把 cancelled 归一成 false、resolved 无 payload 归一成 true，
  * 所以拒绝时不必显式传 payload。
  */
 export type ResumeStatus = 'resolved' | 'cancelled'
 
 export interface ResumeEntry {
-    interruptId: string
     status: ResumeStatus
     payload?: unknown
     metadata?: Record<string, unknown>
@@ -79,8 +81,15 @@ export interface AGUIHistoryMessage {
 export interface RenderResponse {
     threadId: string
     messages: AGUIHistoryMessage[]
-    /** 是否存在待确认的审批：为 true 时前端要把审批卡片恢复出来。 */
+    /** 是否存在待确认的审批。与 `interrupts.length > 0` 等价。 */
     pendingApproval: boolean
+    /**
+     * 待确认的中断详情。
+     *
+     * 后端只在 checkpoint 仍然有效时才返回（见 loadPendingInterrupts），
+     * 所以这里非空就一定能 resume。前端据此在刷新页面后恢复审批卡片。
+     */
+    interrupts: AGUIInterrupt[]
     running: boolean
 }
 
