@@ -9,6 +9,9 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@tdesign-vue-next/chat": "^0.7.0",
+    "tdesign-icons-vue-next": "^0.4.11",
+    "tdesign-vue-next": "^1.20.9",
     "vue": "^3.5.42"
   },
   "devDependencies": {

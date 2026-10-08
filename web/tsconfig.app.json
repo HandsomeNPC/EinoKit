@@ -4,6 +4,13 @@
     "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo",
     "types": ["vite/client"],
     "allowArbitraryExtensions": true,
+    /* 与 vite.config.ts 的 resolve.alias 保持一致。
+       TS 6 起 baseUrl 废弃，paths 直接相对本文件解析。 */
+    "paths": {
+      "@/*": [
+        "./src/*"
+      ]
+    },
 
     /* Linting */
     "noUnusedLocals": true,
