@@ -29,6 +29,10 @@ type demoResult struct {
 	OrderID   string `json:"orderId,omitempty"`
 }
 
+type demoInfo struct {
+	Message string `json:"message,omitempty"`
+}
+
 // unitPriceCents 单杯价格（分）。订单落库是后续里程碑，这里先用固定价。
 const unitPriceCents = 1800
 
@@ -55,7 +59,7 @@ func demoToolInvoke(ctx context.Context, args *demoArgs) (*demoResult, error) {
 	wasInterrupted, _, savedArgs := tool.GetInterruptState[*demoArgs](ctx)
 
 	if !wasInterrupted {
-		return nil, tool.StatefulInterrupt(ctx, confirmMessage(args), args)
+		return nil, tool.StatefulInterrupt(ctx, buildDemoInfo(args).Message, args)
 	}
 	isTarget, hasData, _ := tool.GetResumeContext[types.ResumeEntry](ctx)
 	if isTarget && hasData {
@@ -64,18 +68,20 @@ func demoToolInvoke(ctx context.Context, args *demoArgs) (*demoResult, error) {
 
 	isTarget, _, _ = tool.GetResumeContext[any](ctx)
 	if !isTarget {
-		return nil, tool.StatefulInterrupt(ctx, confirmMessage(args), savedArgs)
+		return nil, tool.StatefulInterrupt(ctx, buildDemoInfo(args).Message, savedArgs)
 	}
 	return nil, nil
 }
 
-// confirmMessage 拼装下单确认提示。count<=0 时按 1 杯计。
-func confirmMessage(args *demoArgs) string {
+// buildDemoInfo 拼装下单确认提示。count<=0 时按 1 杯计。
+func buildDemoInfo(args *demoArgs) *demoInfo {
 	count := args.Count
 	if count <= 0 {
 		count = 1
 	}
-	return fmt.Sprintf("确认下单 %d 杯%s（%s / %s），合计 %.2f 元？",
-		count, args.Flavor, args.Size, args.Sugar,
-		float64(count*unitPriceCents)/100)
+	return &demoInfo{
+		Message: fmt.Sprintf("确认下单 %d 杯%s（%s / %s），合计 %.2f 元？",
+			count, args.Flavor, args.Size, args.Sugar,
+			float64(count*unitPriceCents)/100),
+	}
 }
