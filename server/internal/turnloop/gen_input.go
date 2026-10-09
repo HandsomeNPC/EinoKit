@@ -18,11 +18,9 @@ import (
 // makeGenInput 返回 GenInput 回调。每轮开始时调用,从队列里的 ChatItem
 // 中挑出第一条 query,持久化为用户消息,再拼上会话历史,产出喂给 Agent
 // 的 TypedAgentInput。
-//
-// runID 取自条目所属的 Turn:loop 常驻、跨多次请求,每轮落库要归到发起
-// 它的那次请求名下。
-func makeGenInput(threadID string) func(ctx context.Context, loop *adk.TurnLoop[*ChatItem, *schema.AgenticMessage], items []*ChatItem) (*adk.GenInputResult[*ChatItem, *schema.AgenticMessage], error) {
+func makeGenInput(tc ThreadContext) func(ctx context.Context, loop *adk.TurnLoop[*ChatItem, *schema.AgenticMessage], items []*ChatItem) (*adk.GenInputResult[*ChatItem, *schema.AgenticMessage], error) {
 	return func(ctx context.Context, loop *adk.TurnLoop[*ChatItem, *schema.AgenticMessage], items []*ChatItem) (*adk.GenInputResult[*ChatItem, *schema.AgenticMessage], error) {
+		threadID := tc.ThreadID
 		// 找到第一个带 query 的条目。
 		var consumed []*ChatItem
 		var remaining []*ChatItem

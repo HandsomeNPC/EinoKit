@@ -22,8 +22,9 @@ import (
 var errInterrupted = errors.New("agent interrupted for approval")
 
 // makeOnAgentEvents 返回 OnAgentEvents 回调。
-func makeOnAgentEvents(threadID string) func(ctx context.Context, tc *adk.TurnContext[*ChatItem, *schema.AgenticMessage], evIter *adk.AsyncIterator[*adk.TypedAgentEvent[*schema.AgenticMessage]]) error {
+func makeOnAgentEvents(threadCtx ThreadContext) func(ctx context.Context, tc *adk.TurnContext[*ChatItem, *schema.AgenticMessage], evIter *adk.AsyncIterator[*adk.TypedAgentEvent[*schema.AgenticMessage]]) error {
 	return func(ctx context.Context, tc *adk.TurnContext[*ChatItem, *schema.AgenticMessage], evIter *adk.AsyncIterator[*adk.TypedAgentEvent[*schema.AgenticMessage]]) error {
+		threadID := threadCtx.ThreadID
 		// 本轮归属哪次 HTTP 请求：决定事件往哪条 SSE 流写、消息用哪个 runID
 		// 落库。loop 是常驻的，这些不能在构造期绑定。
 		turn := turnOf(tc.Consumed)
