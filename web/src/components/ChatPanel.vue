@@ -16,7 +16,7 @@
       <div class="panel__body">
         <t-chat-list ref="listRef" :clear-history="false">
           <t-chat-message
-              v-for="message in (messages as ChatMessagesData[])"
+              v-for="message in messages "
               :key="message.id"
               :datetime="formatTime(message.datetime)"
               :message="message"
@@ -24,22 +24,10 @@
               :variant="messageProps[message.role]?.variant"
               allow-content-segment-custom
           >
-            <!--
-              工具调用块交给 ToolCallRenderer，按 toolCallName 匹配已注册组件。
-              content 这里要断言一次：它的联合类型横跨用户消息(可能带 attachment)
-              和 AI 消息，而 isToolCallContent 只收 AIMessageContent。
-              工具调用只会出现在 AI 消息上，断言安全。
-            -->
-            <template
-                v-for="(item, index) in (message.content as AIMessageContent[])"
-                :key="`content-${index}`"
-                #[`${item.type}-${index}`]
-            >
+            <!-- 工具调用内容 -->
+            <template v-for="(item, index) in message.content" :key="`content-${index}`" #[`${item.type}-${index}`]>
               <div v-if="isToolCallContent(item)">
-                <ToolCallRenderer
-                    :tool-call="item.data"
-                    @respond="onToolRespond"
-                />
+                <tool-call-renderer :tool-call="item.data" @respond="handleToolCallRespond"/>
               </div>
             </template>
           </t-chat-message>
@@ -62,8 +50,6 @@
 <script lang="ts" setup>
 import {computed, onMounted, ref} from 'vue'
 import {
-  type AIMessageContent,
-  type ChatMessagesData,
   type ChatRequestParams,
   type TdChatMessageConfig,
   type ToolCall,
@@ -142,17 +128,11 @@ const activeThread = computed(() =>
 /**
  * 工具卡片的 respond 回调。
  */
-async function onToolRespond(_toolCall: ToolCall, response: unknown) {
+async function handleToolCallRespond(_toolcall: ToolCall, response: any) {
   try {
-    await chatEngine.value?.resumeRun({
-      resume: [
-        response === false
-            ? {status: 'cancelled'}
-            : {status: 'resolved', payload: response},
-      ],
-    } as ChatRequestParams)
+    await chatEngine.value?.resumeRun({resume: response} as ChatRequestParams)
   } catch (err) {
-    MessagePlugin.error(err instanceof Error && err.message ? err.message : '恢复执行失败')
+    await MessagePlugin.error(err instanceof Error && err.message ? err.message : '恢复执行失败')
   }
 }
 
@@ -160,7 +140,7 @@ async function refreshThreads() {
   try {
     threads.value = await listThreads()
   } catch (err) {
-    MessagePlugin.error(err instanceof Error && err.message ? err.message : '加载会话列表失败')
+    await MessagePlugin.error(err instanceof Error && err.message ? err.message : '加载会话列表失败')
   }
 }
 
@@ -179,7 +159,7 @@ async function selectThread(threadId: string) {
     )
   } catch (err) {
     if (activeThreadId.value === threadId) {
-      MessagePlugin.error(err instanceof Error && err.message ? err.message : '加载会话历史失败')
+      await MessagePlugin.error(err instanceof Error && err.message ? err.message : '加载会话历史失败')
     }
   }
 }
@@ -191,7 +171,7 @@ async function newThread() {
     chatEngine.value?.clearMessages()
     await selectThread(info.threadId)
   } catch (err) {
-    MessagePlugin.error(err instanceof Error && err.message ? err.message : '创建会话失败')
+    await MessagePlugin.error(err instanceof Error && err.message ? err.message : '创建会话失败')
   }
 }
 
@@ -208,7 +188,7 @@ async function removeThread(threadId: string) {
     const next = threads.value[0]
     if (next) await selectThread(next.threadId)
   } catch (err) {
-    MessagePlugin.error(err instanceof Error && err.message ? err.message : '删除会话失败')
+    await MessagePlugin.error(err instanceof Error && err.message ? err.message : '删除会话失败')
   }
 }
 
@@ -225,7 +205,7 @@ async function handleSend(prompt: string) {
   try {
     await chatEngine.value?.sendUserMessage({prompt: text})
   } catch (err) {
-    MessagePlugin.error(err instanceof Error && err.message ? err.message : '发送失败')
+    await MessagePlugin.error(err instanceof Error && err.message ? err.message : '发送失败')
   }
 }
 
