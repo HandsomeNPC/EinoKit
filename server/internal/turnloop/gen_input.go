@@ -3,16 +3,13 @@ package turnloop
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"log"
 	"strings"
 
-	"github.com/cloudwego/eino/adk"
-	"github.com/cloudwego/eino/schema"
-	"github.com/google/uuid"
-
 	"github.com/HandsomeNPC/EinoKit/internal/memory/thread"
 	"github.com/HandsomeNPC/EinoKit/internal/msgops"
+	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/schema"
 )
 
 // makeGenInput 返回 GenInput 回调。每轮开始时调用,从队列里的 ChatItem
@@ -21,6 +18,7 @@ import (
 func makeGenInput(tc ThreadContext) func(ctx context.Context, loop *adk.TurnLoop[*ChatItem, *schema.AgenticMessage], items []*ChatItem) (*adk.GenInputResult[*ChatItem, *schema.AgenticMessage], error) {
 	return func(ctx context.Context, loop *adk.TurnLoop[*ChatItem, *schema.AgenticMessage], items []*ChatItem) (*adk.GenInputResult[*ChatItem, *schema.AgenticMessage], error) {
 		threadID := tc.ThreadID
+		runID := tc.Emitter.RunID
 		// 找到第一个带 query 的条目。
 		var consumed []*ChatItem
 		var remaining []*ChatItem
@@ -34,30 +32,17 @@ func makeGenInput(tc ThreadContext) func(ctx context.Context, loop *adk.TurnLoop
 			}
 		}
 		if queryItem == nil {
-			// 没有 query 条目 —— 放行这些条目对应的请求，避免 handler 干等，
-			// 然后交还给 loop 继续等新输入（不再 Stop:loop 是常驻的,
-			// 空闲回收由 UntilIdleFor 负责）。
-			for _, item := range items {
-				if item != nil && item.turn != nil {
-					item.turn.completeOne()
-				}
-			}
-			return nil, errNoQueryItems
+			// 没有 query 条目 —— 停止 loop。
+			loop.Stop(adk.WithStopCause("no query items"))
+			return &adk.GenInputResult[*ChatItem, *schema.AgenticMessage]{
+				Input:     &adk.TypedAgentInput[*schema.AgenticMessage]{Messages: []*schema.AgenticMessage{msgops.NewUser[*schema.AgenticMessage]("done")}},
+				Remaining: items,
+			}, nil
 		}
 
-		runID := runIDOf(queryItem)
-
-		// 现在持久化用户消息 —— GenInput 只在前一轮的 OnAgentEvents
+		// 持久化用户消息 —— GenInput 只在前一轮的 OnAgentEvents
 		// 完成其中间消息持久化之后才触发,因此会话历史的顺序得以保证正确。
-		userMsg := schema.UserAgenticMessage(queryItem.Prompt)
-		userMsg = msgops.NormalizeForSession(userMsg)
-		if payload, mErr := json.Marshal(userMsg); mErr == nil {
-			if appendErr := thread.AppendMessage(threadID, runID, string(payload)); appendErr != nil {
-				log.Printf("warn: failed to persist user message: %v", appendErr)
-			}
-		} else {
-			log.Printf("warn: failed to marshal user message: %v", mErr)
-		}
+		persistUserMessage(threadID, runID, queryItem.Prompt)
 
 		history := loadHistory(threadID)
 		runMessages := buildRunMessages(threadID, history)
@@ -75,25 +60,21 @@ func makeGenInput(tc ThreadContext) func(ctx context.Context, loop *adk.TurnLoop
 	}
 }
 
-// errNoQueryItems 表示本批条目里没有可跑的提问。返回它会让 loop 退出,
-// 下次请求再新建 —— 这是防御性分支,正常路径不会走到。
-var errNoQueryItems = errors.New("turnloop: 没有可执行的提问条目")
-
-// runIDOf 取条目所属请求的 runID。条目没带 Turn(如从 checkpoint 恢复出来的
-// 旧条目)时回退到一个新 ID,保证落库仍有分组键。
-func runIDOf(item *ChatItem) string {
-	if item != nil && item.turn != nil {
-		return item.turn.RunID()
+// persistUserMessage 把本轮用户输入归一化后落库到会话历史。
+func persistUserMessage(threadID, runID, prompt string) {
+	userMsg := schema.UserAgenticMessage(prompt)
+	userMsg = msgops.NormalizeForSession(userMsg)
+	if payload, mErr := json.Marshal(userMsg); mErr == nil {
+		if appendErr := thread.AppendMessage(threadID, runID, string(payload)); appendErr != nil {
+			log.Printf("warn: failed to persist user message: %v", appendErr)
+		}
+	} else {
+		log.Printf("warn: failed to marshal user message: %v", mErr)
 	}
-	return uuid.New().String()
 }
 
 // buildRunMessages 在会话历史前面追加一条 [Context] 上下文消息,让
 // Agent 在每轮拿到本轮 query 之外的稳定背景信息。这条消息不会落库,
-// 只在 GenInput 拼 Input 时临时注入,对标 eino-examples 的 buildRunMessages。
-//
-// 当前仅放占位提示词;后续如需注入项目根目录、工作区上传文件等,
-// 在此处扩展 lines 即可,不必改 makeGenInput。
 func buildRunMessages(threadID string, history []*schema.AgenticMessage) []*schema.AgenticMessage {
 	_ = threadID
 	lines := []string{

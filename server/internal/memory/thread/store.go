@@ -133,23 +133,11 @@ func DeleteByID(id string) error {
 }
 
 // AppendMessage 把一条消息追加到指定 (threadID, runID) 的 payload 中。
-// payload 表示一轮对话(run)中全部消息的 JSON 数组:
-//   - 若 (threadID, runID) 行不存在,新建一行,payload = [payload];
-//   - 若已存在,把 payload 作为新元素追加到现有数组末尾。
-//
-// payload 参数为已序列化的单条消息 JSON;调用方负责 marshal,
-// 本包不感知消息泛型类型。整个读-改-写在单事务内完成并加行锁,
-// 保证同一 (threadID, runID) 的并发追加不会丢消息。
 func AppendMessage(threadID, runID, payload string) error {
 	return AppendMessages(threadID, runID, []string{payload})
 }
 
 // AppendMessages 把一批消息一次性追加到指定 (threadID, runID) 的 payload 中。
-// 整批在单事务内完成:读行一次、追加全部、写回一次,把 N 条消息的落库
-// 从 N 次事务(N 次 SELECT FOR UPDATE + N 次重写整个数组)压到 1 次。
-// 适用于 OnAgentEvents 在一轮里累积多条中间消息后统一 flush。
-//
-// payloads 元素为已序列化的单条消息 JSON;空切片直接返回 nil。
 func AppendMessages(threadID, runID string, payloads []string) error {
 	if threadID == "" {
 		return fmt.Errorf("thread: 会话主键为空")

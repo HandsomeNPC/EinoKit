@@ -15,7 +15,7 @@ type Emitter struct {
 	ctx      *gin.Context
 	sse      *sse.SSEWriter
 	threadID string //
-	runID    string
+	RunID    string
 	err      error // 传输错误
 	encErr   error // 编码错误
 }
