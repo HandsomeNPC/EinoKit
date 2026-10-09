@@ -19,10 +19,6 @@ import (
 )
 
 // Render 渲染会话历史。POST /threads/render
-//
-// 返回 AG-UI 的消息数组，供前端 AGUIAdapter.convertHistoryMessages 还原气泡。
-// 有待确认中断时连同中断详情一起返回，前端据此把审批卡片恢复出来——
-// 这样刷新页面不会丢掉待审批状态。
 func Render(c *gin.Context) {
 	var req bo.ThreadRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
