@@ -26,7 +26,7 @@ func makeGenInput(tc ThreadContext) func(ctx context.Context, loop *adk.TurnLoop
 		var remaining []*ChatItem
 		var queryItem *ChatItem
 		for _, item := range items {
-			if queryItem == nil && item.Query != "" {
+			if queryItem == nil && item.Prompt != "" {
 				queryItem = item
 				consumed = append(consumed, item)
 			} else {
@@ -49,7 +49,7 @@ func makeGenInput(tc ThreadContext) func(ctx context.Context, loop *adk.TurnLoop
 
 		// 现在持久化用户消息 —— GenInput 只在前一轮的 OnAgentEvents
 		// 完成其中间消息持久化之后才触发,因此会话历史的顺序得以保证正确。
-		userMsg := schema.UserAgenticMessage(queryItem.Query)
+		userMsg := schema.UserAgenticMessage(queryItem.Prompt)
 		userMsg = msgops.NormalizeForSession(userMsg)
 		if payload, mErr := json.Marshal(userMsg); mErr == nil {
 			if appendErr := thread.AppendMessage(threadID, runID, string(payload)); appendErr != nil {
@@ -62,7 +62,7 @@ func makeGenInput(tc ThreadContext) func(ctx context.Context, loop *adk.TurnLoop
 		history := loadHistory(threadID)
 		runMessages := buildRunMessages(threadID, history)
 
-		log.Printf("[genInput] thread=%s run=%s query=%q messages=%d", threadID, runID, queryItem.Query, len(runMessages))
+		log.Printf("[genInput] thread=%s run=%s query=%q messages=%d", threadID, runID, queryItem.Prompt, len(runMessages))
 
 		return &adk.GenInputResult[*ChatItem, *schema.AgenticMessage]{
 			Input: &adk.TypedAgentInput[*schema.AgenticMessage]{

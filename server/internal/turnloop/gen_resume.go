@@ -21,10 +21,16 @@ func makeGenResume(tc ThreadContext) func(ctx context.Context, loop *adk.TurnLoo
 		if interruptItem == nil {
 			return nil, errors.New("no interrupt item found for resume")
 		}
-
+		targets := make(map[string]any, len(interruptItem.Resume))
+		for _, entry := range interruptItem.Resume {
+			if entry.InterruptID == "" {
+				continue
+			}
+			targets[entry.InterruptID] = entry
+		}
 		return &adk.GenResumeResult[*ChatItem, *schema.AgenticMessage]{
 			ResumeParams: &adk.ResumeParams{
-				Targets: interruptItem.Resume,
+				Targets: targets,
 			},
 			Consumed:  interruptedItems,
 			Remaining: unhandledItems,

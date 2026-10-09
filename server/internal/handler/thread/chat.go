@@ -33,11 +33,11 @@ func Chat(c *gin.Context) {
 	emitter := agui.NewEmitter(c, threadID, runID)
 	tc := turnloop.ThreadContext{ThreadID: threadID, Emitter: emitter}
 	writeSSEHeaders(c)
-	//TODO 把请求转换成ChatItem
+	chatItem := turnloop.NewChatItem(&req)
 	if req.IsResume() {
-		handleResume()
+		handleResume(tc, chatItem)
 	} else {
-		handlePrompt()
+		handlePrompt(tc, chatItem)
 	}
 }
 
@@ -53,12 +53,12 @@ func writeSSEHeaders(c *gin.Context) {
 }
 
 // handleResume 处理中断继续请求
-func handleResume() {
+func handleResume(tc turnloop.ThreadContext, item *turnloop.ChatItem) {
 	//TODO 从TurnLoopHolder获取TurnLoop继续回复,获取不到则新建一个
 }
 
 // 处理非中断请求
-func handlePrompt() {
+func handlePrompt(tc turnloop.ThreadContext, item *turnloop.ChatItem) {
 	//TODO 从TurnLoopHolder获取TurnLoop,获取到了先调用Preempt，
 	//     Preempt调用失败则调用普通的对话,如果获取不到TurnLoop则新建一个再对话
 }
