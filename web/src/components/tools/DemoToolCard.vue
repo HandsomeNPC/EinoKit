@@ -44,6 +44,7 @@
 
 <script lang="ts" setup>
 import {computed, ref, watch} from 'vue'
+import type {ResumeEntry} from '@/api/types'
 
 /**
  * Demo 工具卡片(Human-in-the-Loop)。
@@ -61,7 +62,7 @@ interface DemoToolArgs {
   count?: number
 }
 
-/** Demo 的用户响应：确认/编辑后的订单字段，通过 respond 回传。 */
+/** Demo 的用户响应：确认/编辑后的订单字段，作为 ResumeEntry.payload 回传。 */
 interface DemoToolResponse {
   flavor: string
   size: string
@@ -76,9 +77,15 @@ interface DemoToolResult {
   orderId?: string
 }
 
+/**
+ * 中断恢复条目，对齐后端 bo.ChatRequest.Resume []types.ResumeEntry。
+ * payload 即 Demo 的用户响应 DemoToolResponse。
+ */
+type DemoResumeEntry = ResumeEntry & { payload?: DemoToolResponse }
+
 const props = defineProps<{
   status?: string
-  respond?: (response: DemoToolResponse) => void
+  respond?: (response: DemoResumeEntry[]) => void
   result?: DemoToolResult
   args?: DemoToolArgs
 }>()
@@ -119,11 +126,18 @@ const amountText = computed(() => {
 })
 
 const handleSubmit = () => {
-  props.respond?.({
-    flavor: flavor.value,
-    size: size.value,
-    sugar: sugar.value,
-    count: count.value,
-  })
+  // 对齐后端 bo.ChatRequest.Resume []types.ResumeEntry：
+  // 用户确认即视为 resolved，把订单字段作为 payload 交回，interruptId 由后端回填。
+  props.respond?.([
+    {
+      status: 'resolved',
+      payload: {
+        flavor: flavor.value,
+        size: size.value,
+        sugar: sugar.value,
+        count: count.value,
+      },
+    },
+  ])
 }
 </script>
