@@ -62,7 +62,6 @@
 <script lang="ts" setup>
 import {computed, onMounted, ref} from 'vue'
 import {
-  type AgentToolcallConfig,
   type AIMessageContent,
   type ChatMessagesData,
   type ChatRequestParams,
@@ -85,30 +84,12 @@ import {
   renderThread,
 } from '@/api'
 import type {ChatRequestBody, ThreadInfo} from '@/api/types'
-import DemoToolCard from './tools/DemoToolCard.vue'
+import {toolcallActions} from './tools/register'
 import ThreadSidebar from './ThreadSidebar.vue'
 
 const threads = ref<ThreadInfo[]>([])
 const activeThreadId = ref('')
 const inputValue = ref('')
-
-
-/**
- * 注册工具渲染组件
- */
-const toolcallActions: AgentToolcallConfig[] = [
-  {
-    name: 'Demo',
-    description: '下单购买奶茶，需要用户二次确认',
-    parameters: [
-      {name: 'flavor', type: 'string', required: true},
-      {name: 'size', type: 'string', required: true},
-      {name: 'sugar', type: 'string', required: true},
-      {name: 'count', type: 'number', required: true},
-    ],
-    component: DemoToolCard as AgentToolcallConfig['component'],
-  },
-]
 
 useAgentToolcall(toolcallActions)
 
