@@ -1,7 +1,7 @@
-<script setup lang="ts">
-import ChatPanel from './components/ChatPanel.vue'
-</script>
-
 <template>
   <ChatPanel/>
 </template>
+
+<script lang="ts" setup>
+import ChatPanel from './components/ChatPanel.vue'
+</script>

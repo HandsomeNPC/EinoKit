@@ -1,19 +1,3 @@
-<script lang="ts" setup>
-/** 会话侧边栏：新建、切换、删除。 */
-import type {ThreadInfo} from '@/api/types'
-
-const props = defineProps<{
-  threads: ThreadInfo[]
-  activeThreadId: string
-}>()
-
-const emit = defineEmits<{
-  (e: 'select', threadId: string): void
-  (e: 'remove', threadId: string): void
-  (e: 'create'): void
-}>()
-</script>
-
 <template>
   <aside class="sidebar">
     <div class="sidebar__head">
@@ -56,6 +40,22 @@ const emit = defineEmits<{
     </div>
   </aside>
 </template>
+
+<script lang="ts" setup>
+/** 会话侧边栏：新建、切换、删除。 */
+import type {ThreadInfo} from '@/api/types'
+
+const props = defineProps<{
+  threads: ThreadInfo[]
+  activeThreadId: string
+}>()
+
+const emit = defineEmits<{
+  (e: 'select', threadId: string): void
+  (e: 'remove', threadId: string): void
+  (e: 'create'): void
+}>()
+</script>
 
 <style scoped>
 .sidebar {
