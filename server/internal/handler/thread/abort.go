@@ -1,6 +1,8 @@
 package thread
 
 import (
+	"errors"
+	"log"
 	"net/http"
 	"strings"
 
@@ -25,7 +27,12 @@ func Abort(c *gin.Context) {
 		return
 	}
 	if _, err := thread.SelectByID(threadID); err != nil {
-		writeThreadLookupError(c, err)
+		if errors.Is(err, thread.ErrThreadNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "会话不存在"})
+			return
+		}
+		log.Printf("[thread] 查询会话失败: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询会话失败"})
 		return
 	}
 

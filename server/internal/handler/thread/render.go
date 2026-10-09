@@ -2,6 +2,7 @@ package thread
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -33,7 +34,12 @@ func Render(c *gin.Context) {
 	// 整行读出来：下面要用 info.PendingInterrupt。
 	info, err := thread.SelectByID(id)
 	if err != nil {
-		writeThreadLookupError(c, err)
+		if errors.Is(err, thread.ErrThreadNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "会话不存在"})
+			return
+		}
+		log.Printf("[thread] 查询会话失败: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询会话失败"})
 		return
 	}
 
