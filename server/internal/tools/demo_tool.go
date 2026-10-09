@@ -61,8 +61,9 @@ func demoToolInvoke(ctx context.Context, args *demoArgs) (*demoResult, error) {
 	if !wasInterrupted {
 		return nil, tool.StatefulInterrupt(ctx, buildDemoInfo(args).Message, args)
 	}
-	isTarget, hasData, _ := tool.GetResumeContext[types.ResumeEntry](ctx)
+	isTarget, hasData, resumeEntry := tool.GetResumeContext[types.ResumeEntry](ctx)
 	if isTarget && hasData {
+		fmt.Println(resumeEntry.Payload)
 		return &demoResult{Cancelled: false, Message: "下单成功", OrderID: "1234567890"}, nil
 	}
 
