@@ -8,10 +8,6 @@ type ThreadRequest struct {
 }
 
 // ChatRequest 是对话接口的请求体。
-//
-// 一次请求只做一件事，二者互斥：
-//   - 新一轮提问：填 Prompt（可带 Attachments）；
-//   - 恢复中断：填 Resume，Prompt 留空。
 type ChatRequest struct {
 	ThreadRequest
 	TDesignChatRequestParams

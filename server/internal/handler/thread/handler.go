@@ -34,17 +34,6 @@ func bindThreadID(c *gin.Context) (string, bool) {
 	return id, true
 }
 
-// writeSSEHeaders 写 SSE 响应头。关掉 Nginx 缓冲，否则事件会被攒着不下发。
-func writeSSEHeaders(c *gin.Context) {
-	h := c.Writer.Header()
-	h.Set("Content-Type", "text/event-stream")
-	h.Set("Cache-Control", "no-cache")
-	h.Set("Connection", "keep-alive")
-	h.Set("X-Accel-Buffering", "no")
-	c.Writer.WriteHeader(http.StatusOK)
-	c.Writer.Flush()
-}
-
 // writeThreadLookupError 把查会话的错误翻译成 404 / 500。
 func writeThreadLookupError(c *gin.Context, err error) {
 	if errors.Is(err, thread.ErrThreadNotFound) {

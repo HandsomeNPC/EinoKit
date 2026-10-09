@@ -1,10 +1,5 @@
 package turnloop
 
-import "errors"
-
-// ErrSubmitFailed 条目无法入队（loop 反复在退出边界上）时返回。
-var ErrSubmitFailed = errors.New("turnloop: 无法提交本次请求，请重试")
-
 // ChatItem 每一轮用户输入的对话信息
 type ChatItem struct {
 	Query string // 用户消息文本
