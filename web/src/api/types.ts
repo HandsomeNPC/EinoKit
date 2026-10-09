@@ -99,15 +99,6 @@ export interface AbortResponse {
     message?: string
 }
 
-/** POST /api/threads/docs 的返回体。 */
-export interface UploadResponse {
-    name: string
-    size: number
-    extension: string
-    url: string
-    uploadedAt: string
-}
-
 /**
  * 一个待用户确认的中断。
  *
