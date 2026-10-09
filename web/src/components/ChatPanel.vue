@@ -83,7 +83,7 @@ import {
   listThreads,
   renderThread,
 } from '@/api'
-import type {ChatRequestBody, ThreadInfo} from '@/api/types'
+import type {ThreadInfo} from '@/api/types'
 import {toolcallActions} from './tools/register'
 import ThreadSidebar from './ThreadSidebar.vue'
 
@@ -99,21 +99,14 @@ const {chatEngine, messages, status} = useChat({
     endpoint: CHAT_ENDPOINT,
     protocol: 'agui',
     transport: 'sse',
-    onRequest: (params: ChatRequestParams) => {
-      const {resume} = params as ChatRequestParams<{
-        resume?: ChatRequestBody['resume']
-      }>
-      // 在发请求这一刻读 activeThreadId，所以切会话天然生效。
-      const body: ChatRequestBody = resume?.length
-          ? {threadId: activeThreadId.value, resume}
-          : {threadId: activeThreadId.value, prompt: params.prompt ?? ''}
-
-      return {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(body),
-      }
-    },
+    onRequest: (params: ChatRequestParams) => ({
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        ...params,
+        threadId: activeThreadId.value,
+      }),
+    }),
 
     // 断开 SSE 不会让后端的 run 停下，必须显式调 /abort。
     onAbort: async () => {
@@ -148,12 +141,6 @@ const activeThread = computed(() =>
 
 /**
  * 工具卡片的 respond 回调。
- *
- * 把用户的回传值作为 resume payload 发回后端。约定 `response === false` 表示
- * 取消（审批类卡片回传布尔值），其余一律视为已解决，response 原样作为 payload，
- * 这样需要结构化回执的工具（如表单）不必改动这里。
- *
- * 不传 interruptId —— 后端用自己记录的中断快照回填（见 buildChatItem）。
  */
 async function onToolRespond(_toolCall: ToolCall, response: unknown) {
   try {
