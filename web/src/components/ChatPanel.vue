@@ -66,7 +66,7 @@ const pendingInterrupts = ref(new Map<string, AGUIInterrupt>())
  */
 const toolcallActions: AgentToolcallConfig[] = [
   {
-    name: 'order_milk_tea',
+    name: 'Demo',
     description: '下单购买奶茶，需要用户二次确认',
     parameters: [
       {name: 'flavor', type: 'string', required: true},

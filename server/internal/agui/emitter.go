@@ -21,7 +21,7 @@ type Emitter struct {
 }
 
 func NewEmitter(ctx *gin.Context, threadID, runID string) *Emitter {
-	return &Emitter{ctx: ctx, sse: sse.NewSSEWriter(), threadID: threadID, runID: runID}
+	return &Emitter{ctx: ctx, sse: sse.NewSSEWriter(), threadID: threadID, RunID: runID}
 }
 
 func (e *Emitter) Err() error { return e.err }
@@ -52,18 +52,18 @@ func isTransportError(err error) bool {
 
 // --- run lifecycle ---
 
-func (e *Emitter) RunStarted() { e.write(events.NewRunStartedEvent(e.threadID, e.runID)) }
+func (e *Emitter) RunStarted() { e.write(events.NewRunStartedEvent(e.threadID, e.RunID)) }
 
 func (e *Emitter) RunFinishedSuccess() {
-	e.write(events.NewRunFinishedEventWithOptions(e.threadID, e.runID, events.WithSuccessOutcome()))
+	e.write(events.NewRunFinishedEventWithOptions(e.threadID, e.RunID, events.WithSuccessOutcome()))
 }
 
 func (e *Emitter) RunFinishedInterrupt(interrupts []types.Interrupt) {
-	e.write(events.NewRunFinishedEventWithOptions(e.threadID, e.runID, events.WithInterruptOutcome(interrupts)))
+	e.write(events.NewRunFinishedEventWithOptions(e.threadID, e.RunID, events.WithInterruptOutcome(interrupts)))
 }
 
 func (e *Emitter) RunError(msg string) {
-	e.write(events.NewRunErrorEvent(msg, events.WithRunID(e.runID)))
+	e.write(events.NewRunErrorEvent(msg, events.WithRunID(e.RunID)))
 }
 
 // --- steps ---

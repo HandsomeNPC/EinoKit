@@ -2,7 +2,7 @@
 /**
  * 下单审批卡片(Human-in-the-Loop)。
  *
- * 注册为 `order_milk_tea` 工具的渲染组件(见 demo.vue 的 useAgentToolcall)，
+ * 注册为 `Demo` 工具的渲染组件(见 demo.vue 的 useAgentToolcall)，
  * 由 ToolCallRenderer 按 toolCallName 匹配后渲染，props 也由它注入：
  *   - args   —— 工具入参(后端 TOOL_CALL_ARGS 的 JSON，已 parse)
  *   - status —— idle/executing/complete/error
@@ -14,7 +14,7 @@
  */
 import {computed} from 'vue'
 
-/** order_milk_tea 的入参，对齐后端 orderMilkTeaArgs。 */
+/** Demo 的入参，对齐后端 demoArgs。 */
 interface OrderArgs {
   flavor?: string
   size?: string
@@ -22,18 +22,11 @@ interface OrderArgs {
   count?: number
 }
 
-/** order_milk_tea 的返回值，对齐后端 orderMilkTeaResult。 */
+/** Demo 的返回值，对齐后端 demoResult。 */
 interface OrderResult {
   cancelled?: boolean
   message?: string
   orderId?: string
-  flavor?: string
-  size?: string
-  sugar?: string
-  count?: number
-  /** 金额，单位：分。 */
-  amount?: number
-  eta?: string
 }
 
 /**
@@ -106,10 +99,6 @@ const order = computed(() =>
         <div class="order-card__title order-card__title--ok">✓ 下单成功</div>
         <t-space direction="vertical" size="small">
           <div class="order-card__line">订单号：{{ order.orderId }}</div>
-          <div class="order-card__line">
-            金额：¥{{ ((order.amount ?? 0) / 100).toFixed(2) }}
-          </div>
-          <div class="order-card__line">预计送达：{{ order.eta }}</div>
         </t-space>
       </template>
     </template>
