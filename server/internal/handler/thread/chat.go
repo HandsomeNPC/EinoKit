@@ -1,10 +1,12 @@
 package thread
 
 import (
+	"context"
 	"net/http"
 	"strings"
 
 	"github.com/ag-ui-protocol/ag-ui/sdks/community/go/pkg/core/events"
+	"github.com/cloudwego/eino/adk"
 	"github.com/gin-gonic/gin"
 
 	"github.com/HandsomeNPC/EinoKit/internal/agui"
@@ -54,11 +56,35 @@ func writeSSEHeaders(c *gin.Context) {
 
 // handleResume 处理中断继续请求
 func handleResume(tc turnloop.ThreadContext, item *turnloop.ChatItem) {
-	//TODO 从TurnLoopHolder获取TurnLoop继续回复,获取不到则新建一个
+	loop, ok := turnloop.TurnloopHolderInstance.Get(tc.ThreadID)
+	if !ok {
+		//获取不到TurnLoop则创建一个再继续
+		loop = turnloop.NewTurnLoop(tc)
+		turnloop.TurnloopHolderInstance.Put(tc.ThreadID, loop)
+	}
+	loop.Push(item)
+	tc.Emitter.RunStarted()
+	loop.Run(context.Background())
 }
 
 // 处理非中断请求
 func handlePrompt(tc turnloop.ThreadContext, item *turnloop.ChatItem) {
-	//TODO 从TurnLoopHolder获取TurnLoop,获取到了先调用Preempt，
-	//     Preempt调用失败则调用普通的对话,如果获取不到TurnLoop则新建一个再对话
+	loop, ok := turnloop.TurnloopHolderInstance.Get(tc.ThreadID)
+	if !ok {
+		//获取不到TurnLoop则创建一个再继续
+		loop = turnloop.NewTurnLoop(tc)
+		turnloop.TurnloopHolderInstance.Put(tc.ThreadID, loop)
+		loop.Push(item)
+		tc.Emitter.RunStarted()
+		loop.Run(context.Background())
+		return
+	}
+	//如果当前存在Loop,则先Preempt失败则run
+	ok, _ = loop.Push(item, adk.WithPreempt[*turnloop.ChatItem, adk.AgenticMessage](adk.AfterToolCalls))
+	if !ok {
+		loop.Push(item)
+	}
+	tc.Emitter.RunStarted()
+	loop.Run(context.Background())
+
 }
