@@ -7,18 +7,19 @@ import (
 	"github.com/cloudwego/eino/schema"
 
 	"github.com/HandsomeNPC/EinoKit/internal/agents"
-	"github.com/HandsomeNPC/EinoKit/internal/agui"
 	"github.com/HandsomeNPC/EinoKit/internal/checkpoint"
 	"github.com/HandsomeNPC/EinoKit/internal/memory/thread"
 )
 
-// ThreadContext 是一次会话运行的线程上下文:携带 threadID 与本轮 SSE emitter。
+// ThreadContext 是一个会话的 loop 级上下文。
+//
+// 只放跨轮不变的信息：loop 跨请求常驻，emitter/runID 每轮都不同，它们随 ChatItem
+// 的 turn 走（见 turn.go），绝不能放在这里被闭包进构造期。
 type ThreadContext struct {
 	ThreadID string
-	Emitter  *agui.Emitter
 }
 
-// NewTurnLoop 构造一个会话的 loop,tc 携带的 threadID/emitter 透传给各回调。
+// NewTurnLoop 构造一个会话的常驻 loop。
 func NewTurnLoop(tc ThreadContext) *adk.TurnLoop[*ChatItem, *schema.AgenticMessage] {
 	cfg := adk.TurnLoopConfig[*ChatItem, *schema.AgenticMessage]{
 		GenInput:      makeGenInput(tc),      //每轮开始时调用，决定"这一轮 Agent 看到什么"

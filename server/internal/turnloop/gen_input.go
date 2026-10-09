@@ -6,10 +6,12 @@ import (
 	"log"
 	"strings"
 
-	"github.com/HandsomeNPC/EinoKit/internal/memory/thread"
-	"github.com/HandsomeNPC/EinoKit/internal/msgops"
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/schema"
+
+	"github.com/HandsomeNPC/EinoKit/internal/agui"
+	"github.com/HandsomeNPC/EinoKit/internal/memory/thread"
+	"github.com/HandsomeNPC/EinoKit/internal/msgops"
 )
 
 // makeGenInput 返回 GenInput 回调。每轮开始时调用,从队列里的 ChatItem
@@ -18,7 +20,6 @@ import (
 func makeGenInput(tc ThreadContext) func(ctx context.Context, loop *adk.TurnLoop[*ChatItem, *schema.AgenticMessage], items []*ChatItem) (*adk.GenInputResult[*ChatItem, *schema.AgenticMessage], error) {
 	return func(ctx context.Context, loop *adk.TurnLoop[*ChatItem, *schema.AgenticMessage], items []*ChatItem) (*adk.GenInputResult[*ChatItem, *schema.AgenticMessage], error) {
 		threadID := tc.ThreadID
-		runID := tc.Emitter.RunID
 		// 找到第一个带 query 的条目。
 		var consumed []*ChatItem
 		var remaining []*ChatItem
@@ -40,6 +41,11 @@ func makeGenInput(tc ThreadContext) func(ctx context.Context, loop *adk.TurnLoop
 			}, nil
 		}
 
+		// 本轮的 emitter/runID 来自条目携带的 turn，而非构造期闭包——loop 跨请求
+		// 常驻，每轮 SSE 流都是新的。
+		turn := turnOf(consumed)
+		runID := turn.RunID()
+
 		// 持久化用户消息 —— GenInput 只在前一轮的 OnAgentEvents
 		// 完成其中间消息持久化之后才触发,因此会话历史的顺序得以保证正确。
 		persistUserMessage(threadID, runID, queryItem.Prompt)
@@ -49,7 +55,16 @@ func makeGenInput(tc ThreadContext) func(ctx context.Context, loop *adk.TurnLoop
 
 		log.Printf("[genInput] thread=%s run=%s query=%q messages=%d", threadID, runID, queryItem.Prompt, len(runMessages))
 
+		// 把 emitter 挂到本轮执行 ctx 上，使工具内部能发 STATE_*/ACTIVITY_*——
+		// 这类"执行到第几步"的中途状态在 Eino 事件流里没有对应物。
+		// RunCtx 必须从传入的 ctx 派生，以保留 TurnLoop 的取消语义。
+		runCtx := ctx
+		if turn != nil && turn.Emitter != nil {
+			runCtx = agui.WithEmitter(ctx, turn.Emitter)
+		}
+
 		return &adk.GenInputResult[*ChatItem, *schema.AgenticMessage]{
+			RunCtx: runCtx,
 			Input: &adk.TypedAgentInput[*schema.AgenticMessage]{
 				Messages:        runMessages,
 				EnableStreaming: true,

@@ -179,7 +179,7 @@ async function removeThread(threadId: string) {
   try {
     await deleteThread(threadId)
     threads.value = threads.value.filter(
-        (t: ThreadInfo) => t.threadId === threadId,
+        (t: ThreadInfo) => t.threadId !== threadId,
     )
     if (activeThreadId.value !== threadId) return
 
@@ -264,11 +264,18 @@ onMounted(async () => {
   font-weight: 600;
 }
 
-/* min-height:0 —— 否则 flex 子项不收缩，长列表会把输入框顶出视口。 */
+/*
+ * 必须是 flex 容器：t-chat 自身是 `flex: 1 1 0%`，靠父级撑出确定高度，
+ * 真正的滚动容器 .t-chat__list 才拿得到 `flex:1` + `overflow-y:auto`。
+ * 父级若是普通 block，t-chat 高度退化为内容高度，于是既没有滚动条，
+ * 组件内部的 scrollToBottom 也会因 scrollHeight === clientHeight 变成空操作。
+ * min-height:0 —— 否则 flex 子项不收缩，长列表会把输入框顶出视口。
+ */
 .panel__body {
   flex: 1;
   min-height: 0;
-  overflow: hidden;
+  display: flex;
+  flex-direction: column;
   padding: 16px;
 }
 

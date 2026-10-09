@@ -191,6 +191,32 @@ func ToolResults[M adk.MessageType](msg M) []ToolResult {
 	}
 }
 
+// ReasoningText returns the plaintext reasoning carried by a message or
+// streaming chunk. Encrypted reasoning blobs (Signature) are never returned —
+// they must not leak to clients.
+func ReasoningText[M adk.MessageType](msg M) string {
+	switch m := any(msg).(type) {
+	case *schema.Message:
+		if m == nil {
+			return ""
+		}
+		return m.ReasoningContent
+	case *schema.AgenticMessage:
+		if m == nil {
+			return ""
+		}
+		var parts []string
+		for _, block := range m.ContentBlocks {
+			if block != nil && block.Type == schema.ContentBlockTypeReasoning && block.Reasoning != nil {
+				parts = append(parts, block.Reasoning.Text)
+			}
+		}
+		return strings.Join(parts, "")
+	default:
+		return ""
+	}
+}
+
 // RoleLabel returns the human label used by chatwitheino UIs.
 func RoleLabel[M adk.MessageType](msg M) string {
 	switch m := any(msg).(type) {

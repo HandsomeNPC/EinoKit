@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/ag-ui-protocol/ag-ui/sdks/community/go/pkg/core/types"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
@@ -76,17 +77,25 @@ func UpdateTitle(id, title string) error {
 
 // SavePendingInterrupt 记录会话待确认的中断快照。
 //
-// payload 为 AG-UI []types.Interrupt 的 JSON 数组，由调用方 marshal。
-// 传 nil / 空切片等同于 ClearPendingInterrupt。
-func SavePendingInterrupt(id string, payload []byte) error {
+// 整组覆盖写，绝不追加：工具可能二次中断并产生全新 interrupt ID，若追加，
+// 前端会同时看到已失效的和仍有效的 ID，点哪个都可能报错。
+//
+// 这里显式 marshal 成 string 再写：把 []types.Interrupt 直接交给 Update 会被
+// GORM 当作变参列表展开，单元素切片被拆成其首个元素，结果在列里存成单个
+// JSON object 而不是数组——且不报错，读取时才在 Scan 阶段炸（实测）。
+func SavePendingInterrupt(id string, items []types.Interrupt) error {
 	if id == "" {
 		return fmt.Errorf("thread: 会话主键为空")
 	}
-	if len(payload) == 0 {
+	if len(items) == 0 {
 		return ClearPendingInterrupt(id)
 	}
+	payload, err := json.Marshal(items)
+	if err != nil {
+		return fmt.Errorf("thread: 序列化待确认中断 id=%s 失败: %w", id, err)
+	}
 	res := database.GetInstance().WithContext(context.Background()).Model(&ThreadInfo{}).
-		Where("thread_id = ?", id).Update("pending_interrupt", payload)
+		Where("thread_id = ?", id).Update("pending_interrupt", string(payload))
 	if res.Error != nil {
 		return fmt.Errorf("thread: 保存待确认中断 id=%s 失败: %w", id, res.Error)
 	}

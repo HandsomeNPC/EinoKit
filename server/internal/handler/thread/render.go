@@ -16,6 +16,7 @@ import (
 	"github.com/HandsomeNPC/EinoKit/internal/memory/thread"
 	"github.com/HandsomeNPC/EinoKit/internal/model/bo"
 	"github.com/HandsomeNPC/EinoKit/internal/msgops"
+	"github.com/HandsomeNPC/EinoKit/internal/turnloop"
 )
 
 // Render 渲染会话历史。POST /threads/render
@@ -30,9 +31,7 @@ func Render(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "threadId 不能为空"})
 		return
 	}
-	// 整行读出来：下面要用 info.PendingInterrupt。
-	_, err := thread.SelectByID(id)
-	if err != nil {
+	if _, err := thread.SelectByID(id); err != nil {
 		if errors.Is(err, thread.ErrThreadNotFound) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "会话不存在"})
 			return
@@ -49,9 +48,23 @@ func Render(c *gin.Context) {
 		return
 	}
 
+	// 待确认中断只在 checkpoint 仍然有效时才返回，保证前端拿到的审批卡片
+	// 点下去一定能 resume。查询失败不影响历史渲染，降级为"无待确认中断"。
+	interrupts, err := turnloop.PendingInterrupts(c.Request.Context(), id)
+	if err != nil {
+		log.Printf("[thread] 查询待确认中断失败 thread=%s: %v", id, err)
+		interrupts = nil
+	}
+	if interrupts == nil {
+		interrupts = []types.Interrupt{}
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"threadId": id,
-		"messages": msgs,
+		"threadId":        id,
+		"messages":        msgs,
+		"interrupts":      interrupts,
+		"pendingApproval": len(interrupts) > 0,
+		"running":         turnloop.IsRunning(id),
 	})
 }
 

@@ -63,7 +63,11 @@ func demoToolInvoke(ctx context.Context, args *demoArgs) (*demoResult, error) {
 	}
 	isTarget, hasData, resumeEntry := tool.GetResumeContext[types.ResumeEntry](ctx)
 	if isTarget && hasData {
-		fmt.Println(resumeEntry.Payload)
+		// 用户取消：如实返回未创建订单，让模型据此回复，而不是照样下单。
+		if resumeEntry.Status == types.ResumeStatusCancelled {
+			return &demoResult{Cancelled: true, Message: "用户取消了本次下单，订单未创建。"}, nil
+		}
+		log.Printf("[tools] %s 收到用户确认: %v", ToolNameDemo, resumeEntry.Payload)
 		return &demoResult{Cancelled: false, Message: "下单成功", OrderID: "1234567890"}, nil
 	}
 

@@ -3,6 +3,7 @@ package agui
 import (
 	"encoding/json"
 	"strings"
+	"sync"
 
 	"github.com/ag-ui-protocol/ag-ui/sdks/community/go/pkg/core/events"
 	"github.com/ag-ui-protocol/ag-ui/sdks/community/go/pkg/core/types"
@@ -10,8 +11,14 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// Emitter 用于向客户端发送AG-UI事件
+// Emitter 用于向客户端发送AG-UI事件。
+//
+// 并发安全：SSEWriter 自身不加锁，而工具内部发 STATE_*/ACTIVITY_* 时可能跑在
+// ToolsNode 的并发 goroutine 上（compose.parallelRunToolCall 对多个 tool call
+// 真的开 goroutine）。没有这把锁，两个事件的 "data: {...}\n\n" 会交错写入同一个
+// ResponseWriter，产出客户端无法解析的帧。
 type Emitter struct {
+	mu       sync.Mutex
 	ctx      *gin.Context
 	sse      *sse.SSEWriter
 	threadID string //
@@ -24,11 +31,21 @@ func NewEmitter(ctx *gin.Context, threadID, runID string) *Emitter {
 	return &Emitter{ctx: ctx, sse: sse.NewSSEWriter(), threadID: threadID, RunID: runID}
 }
 
-func (e *Emitter) Err() error { return e.err }
+func (e *Emitter) Err() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.err
+}
 
-func (e *Emitter) EncErr() error { return e.encErr }
+func (e *Emitter) EncErr() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.encErr
+}
 
 func (e *Emitter) write(ev events.Event) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	if e.err != nil {
 		return
 	}
@@ -144,14 +161,17 @@ func (e *Emitter) ToolArgs(toolCallID, delta string) {
 // ToolArgsAllowEmpty 发送 TOOL_CALL_ARGS,允许 delta 为空字符串。
 // 标准 SDK 的 Validate 会拒绝空 delta,这里通过原始字节写入以复现 delta:"" 的场景。
 func (e *Emitter) ToolArgsAllowEmpty(toolCallID, delta string) {
-	if e.err != nil {
-		return
-	}
 	payload, err := json.Marshal(struct {
 		Type       string `json:"type"`
 		ToolCallID string `json:"toolCallId"`
 		Delta      string `json:"delta"`
 	}{Type: "TOOL_CALL_ARGS", ToolCallID: toolCallID, Delta: delta})
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.err != nil {
+		return
+	}
 	if err != nil {
 		if e.encErr == nil {
 			e.encErr = err
@@ -160,6 +180,9 @@ func (e *Emitter) ToolArgsAllowEmpty(toolCallID, delta string) {
 	}
 	if err := e.sse.WriteBytes(e.ctx, e.ctx.Writer, payload); err != nil {
 		if isTransportError(err) {
+			if e.err == nil {
+				e.err = err
+			}
 			return
 		}
 		if e.encErr == nil {
