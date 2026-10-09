@@ -7,19 +7,10 @@ export interface ThreadInfo {
     updatedAt: string
 }
 
-/**
- * 中断恢复条目。对齐 ag-ui 的 ResumeEntry：
- * 批准 `{ status: 'resolved', payload: true }`，拒绝 `{ status: 'cancelled' }`。
- *
- * interruptId 由后端用 thread_info 里的中断快照回填，前端不必传——
- * 服务端只认自己记录的那个 ID，客户端传了也会被忽略。
- *
- * 后端 resumeDecision 把 cancelled 归一成 false、resolved 无 payload 归一成 true，
- * 所以拒绝时不必显式传 payload。
- */
 export type ResumeStatus = 'resolved' | 'cancelled'
 
 export interface ResumeEntry {
+    interruptId?: string
     status: ResumeStatus
     payload?: unknown
     metadata?: Record<string, unknown>
