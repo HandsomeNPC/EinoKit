@@ -34,7 +34,7 @@ import {
   renderThread,
 } from '@/api'
 import type {AGUIInterrupt, ChatRequestBody, ThreadInfo} from '@/api/types'
-import OrderApprovalCard from './OrderApprovalCard.vue'
+import DemoToolCard from './tools/DemoToolCard.vue'
 import ThreadSidebar from './ThreadSidebar.vue'
 
 const threads = ref<ThreadInfo[]>([])
@@ -74,7 +74,7 @@ const toolcallActions: AgentToolcallConfig[] = [
       {name: 'sugar', type: 'string', required: true},
       {name: 'count', type: 'number', required: true},
     ],
-    component: OrderApprovalCard as AgentToolcallConfig['component'],
+    component: DemoToolCard as AgentToolcallConfig['component'],
   },
 ]
 
